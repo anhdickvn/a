@@ -1,0 +1,38 @@
+name: ChatMinecraft
+options:
+  bundleIdPrefix: com.yourname.minecraft
+  deploymentTarget:
+    iOS: "16.0"
+
+packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: "0.9.19"
+
+targets:
+  Minecraft:
+    type: application
+    platform: iOS
+    dependencies:
+      - package: ZIPFoundation
+    sources:
+      - Sources/ChatApp
+    info:
+      path: Sources/ChatApp/Info.plist
+      properties:
+        UILaunchScreen: {}
+        CFBundleDisplayName: ChatMinecraft
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yourname.minecraft
+        MARKETING_VERSION: "1.2"
+        CURRENT_PROJECT_VERSION: "3"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        # Không ký khi build trên CI — AltStore/SideStore sẽ tự ký lại khi cài
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        DEVELOPMENT_TEAM: ""
