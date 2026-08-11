@@ -1,0 +1,46 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate --spec project.yml
+          test -d Minecraft.xcodeproj
+          test -f Minecraft.xcodeproj/project.pbxproj
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project Minecraft.xcodeproj \
+            -scheme Minecraft \
+            -archivePath build/Minecraft.xcarchive \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package unsigned app
+        run: |
+          mkdir -p build/Payload
+          cp -R build/Minecraft.xcarchive/Products/Applications/Minecraft.app build/Payload/Minecraft.app
+          cd build
+          zip -qry Minecraft-unsigned.ipa Payload
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-unsigned-ipa
+          path: build/Minecraft-unsigned.ipa
