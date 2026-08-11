@@ -1,4 +1,4 @@
-name: Minecraft
+name: ChatMinecraft
 options:
   bundleIdPrefix: com.yourname.minecraft
   deploymentTarget:
@@ -21,7 +21,7 @@ targets:
       path: Sources/ChatApp/Info.plist
       properties:
         UILaunchScreen: {}
-        CFBundleDisplayName: Minecraft
+        CFBundleDisplayName: ChatMinecraft
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
     settings:
