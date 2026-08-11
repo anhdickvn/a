@@ -32,7 +32,7 @@ enum MCVarInt {
 
 /// Bộ đệm byte tích luỹ từ socket, cho phép "thử đọc" 1 gói tin hoàn chỉnh,
 /// và nếu chưa đủ dữ liệu thì trả nil để chờ nhận thêm.
-final class MCByteBuffer {
+final class MCByteBuffer: @unchecked Sendable {
     private var storage = Data()
     private var readIndex = 0
 
