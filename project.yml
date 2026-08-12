@@ -1,40 +1,35 @@
 name: ChatMC
+
 options:
-  bundleIdPrefix: com.yourname.minecraft
-  deploymentTarget:
-    iOS: "16.0"
+  bundleIdPrefix: com.chatmc
 
 packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
-    from: "0.9.19"
+    from: 0.9.20
 
 targets:
-  Minecraft:
+  ChatMC:
     type: application
     platform: iOS
+    deploymentTarget: "16.0"
+
+    sources:
+      - Sources
+
     dependencies:
       - package: ZIPFoundation
-    sources:
-      - Sources/ChatApp
-    info:
-      path: Sources/ChatApp/Info.plist
-      properties:
-        UILaunchScreen: {}
-        CFBundleDisplayName: ChatMC
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.yourname.chatmc
+        PRODUCT_BUNDLE_IDENTIFIER: com.chatmc.app
         PRODUCT_NAME: ChatMC
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "55"
         SWIFT_VERSION: "5.0"
-        TARGETED_DEVICE_FAMILY: "1"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Không ký khi build trên CI — AltStore/SideStore sẽ tự ký lại khi cài
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ""
-        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ChatMC:
+    build:
+      targets:
+        ChatMC:
+          - all
