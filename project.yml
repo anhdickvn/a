@@ -2,6 +2,7 @@ name: ChatMC
 
 options:
   bundleIdPrefix: com.chatmc
+  createIntermediateGroups: true
 
 packages:
   ZIPFoundation:
@@ -9,6 +10,7 @@ packages:
     from: 0.9.20
 
 targets:
+
   ChatMC:
     type: application
     platform: iOS
@@ -22,14 +24,32 @@ targets:
 
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.chatmc.app
         PRODUCT_NAME: ChatMC
+        PRODUCT_BUNDLE_IDENTIFIER: com.chatmc.app
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
 
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+          CODE_SIGNING_ALLOWED: NO
+          CODE_SIGNING_REQUIRED: NO
+
+
 schemes:
+
   ChatMC:
     build:
       targets:
         ChatMC:
-          - all
+          - Debug
+          - Release
+
+    run:
+      config: Debug
+
+    archive:
+      config: Release
