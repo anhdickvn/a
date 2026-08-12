@@ -68,3 +68,11 @@ iOS Minecraft Java chat client based on the existing ChatCraft-style project.
 
 ## Build
 The project is generated from `project.yml` and targets iOS 16.0. The GitHub repository/project target remains compatible with the existing `a` repository workflow.
+
+## v9 connection/UI fixes
+- Manual Disconnect stops reconnect/keep-alive tasks, clears only the current chat session, and returns to Accounts/Servers.
+- Chat history remains in Logs and Logs now has search for message/username/server.
+- Stationary heartbeat uses protocol-340 Player (0x0C, On Ground only); position packets use Player Position (0x0D) only when position actually changes.
+- WASD/Jump controls use one touch gesture to avoid SwiftUI gesture conflicts.
+- Account selector supports horizontal paging; the selected username is used when connecting to a server.
+- Server Status favicon is decoded and displayed when the server provides one.
