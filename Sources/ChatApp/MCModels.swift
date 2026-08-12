@@ -17,20 +17,28 @@ final class MCAccountStore: ObservableObject {
     @Published var accounts: [MCAccount] {
         didSet {
             save()
-            // Nếu account đang chọn bị xoá (hoặc chưa từng chọn), tự rơi về account đầu tiên
-            // để luôn có 1 "tài khoản đang dùng" — vào server nào cũng dùng đúng account này.
-            if selectedAccountId == nil || !accounts.contains(where: { $0.id == selectedAccountId }) {
+            if let selected = selectedAccountId, !accounts.contains(where: { $0.id == selected }) {
+                selectedAccountId = accounts.first?.id
+            } else if selectedAccountId == nil {
                 selectedAccountId = accounts.first?.id
             }
         }
     }
-    /// Account đang được chọn ở khung carousel trên đầu màn hình danh sách server.
-    /// Đây là account DUY NHẤT dùng để vào MỌI server — không còn chọn riêng theo từng server nữa.
+
+    /// Tài khoản đang được chọn ở mục Accounts.
+    /// Server chat luôn dùng tài khoản này, không còn gắn username riêng cho từng server.
     @Published var selectedAccountId: UUID? {
-        didSet { saveSelected() }
+        didSet {
+            if let id = selectedAccountId {
+                UserDefaults.standard.set(id.uuidString, forKey: selectedKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedKey)
+            }
+        }
     }
+
     private let key = "mc_accounts"
-    private let selectedKey = "mc_selected_account_id"
+    private let selectedKey = "mc_selected_account"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -39,11 +47,13 @@ final class MCAccountStore: ObservableObject {
         } else {
             self.accounts = []
         }
-        if let idString = UserDefaults.standard.string(forKey: selectedKey), let uuid = UUID(uuidString: idString),
-           self.accounts.contains(where: { $0.id == uuid }) {
-            self.selectedAccountId = uuid
+
+        if let raw = UserDefaults.standard.string(forKey: selectedKey),
+           let id = UUID(uuidString: raw),
+           accounts.contains(where: { $0.id == id }) {
+            self.selectedAccountId = id
         } else {
-            self.selectedAccountId = self.accounts.first?.id
+            self.selectedAccountId = accounts.first?.id
         }
     }
 
@@ -53,19 +63,14 @@ final class MCAccountStore: ObservableObject {
         }
     }
 
-    private func saveSelected() {
-        UserDefaults.standard.set(selectedAccountId?.uuidString, forKey: selectedKey)
+    var selectedAccount: MCAccount? {
+        guard let id = selectedAccountId else { return nil }
+        return accounts.first { $0.id == id }
     }
 
     func account(for id: UUID?) -> MCAccount? {
         guard let id else { return nil }
         return accounts.first { $0.id == id }
-    }
-
-    /// Account sẽ dùng để đăng nhập khi vào bất kỳ server nào — luôn là account
-    /// đang được chọn ở carousel trên đầu màn hình (mặc định = account đầu tiên).
-    var currentAccount: MCAccount? {
-        account(for: selectedAccountId) ?? accounts.first
     }
 }
 
@@ -108,23 +113,24 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
     var name: String            // tên gợi nhớ, vd "Server nhà"
     var host: String            // vd: play.example.com
     var port: UInt16 = 25565
+    var accountId: UUID?        // tham chiếu tới MCAccount đã lưu trong MCAccountStore
     /// Nếu bật, sau khi Login Success app sẽ tự gửi /login <mật khẩu> và chỉ khi đó
     /// mới chạy flow chuột phải la bàn / mở menu server. Tắt = tuyệt đối không tự gửi login.
     var useLogin: Bool = false
     /// Protocol version dùng khi handshake login. Chọn đúng version thật của server
     /// (vd 1.12.2 = 340) thay vì để app tự đoán/hardcode, tránh bị kick "Outdated client".
-    var protocolVersion: Int32 = 760
-
+    var protocolVersion: Int32 = 47
     private enum CodingKeys: String, CodingKey {
-        case id, name, host, port, useLogin, protocolVersion
+        case id, name, host, port, accountId, useLogin, protocolVersion
     }
 
-    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565,
-         useLogin: Bool = false, protocolVersion: Int32 = 760) {
+    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565, accountId: UUID? = nil,
+         useLogin: Bool = false, protocolVersion: Int32 = 47) {
         self.id = id
         self.name = name
         self.host = host
         self.port = port
+        self.accountId = accountId
         self.useLogin = useLogin
         self.protocolVersion = protocolVersion
     }
@@ -135,8 +141,9 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
         name = try c.decode(String.self, forKey: .name)
         host = try c.decode(String.self, forKey: .host)
         port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 25565
+        accountId = try c.decodeIfPresent(UUID.self, forKey: .accountId)
         useLogin = try c.decodeIfPresent(Bool.self, forKey: .useLogin) ?? false
-        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 760
+        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 47
     }
 }
 
@@ -162,12 +169,33 @@ final class MCProfileStore: ObservableObject {
     }
 
     func ensureDefaultServer() {
-        let exists = profiles.contains {
+        if let index = profiles.firstIndex(where: {
             $0.host.caseInsensitiveCompare("proxy.toichoi.com") == .orderedSame && $0.port == 54321
+        }) {
+            // Proxy 54321 đã được kiểm tra thực tế: Waterfall quảng bá protocol 47.
+            // Di chuyển profile cũ từng bị lưu 760 về 1.8.x / protocol 47.
+            if profiles[index].protocolVersion != 47 {
+                profiles[index].protocolVersion = 47
+            }
+            return
         }
-        guard !exists else { return }
-        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321,
-                                         protocolVersion: 47), at: 0)
+
+        profiles.insert(
+            MCServerProfile(
+                name: "Tôi Chơi NetWork",
+                host: "proxy.toichoi.com",
+                port: 54321,
+                accountId: selectedAccountIdForDefaultServer(),
+                protocolVersion: 47
+            ),
+            at: 0
+        )
+    }
+
+    private func selectedAccountIdForDefaultServer() -> UUID? {
+        // MCProfileStore không giữ accountStore; profile mới sẽ được gắn lại
+        // với account đang chọn khi mở màn hình sửa server nếu cần.
+        nil
     }
 }
 

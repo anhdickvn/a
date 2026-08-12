@@ -33,9 +33,7 @@ struct MCChatView: View {
     @State private var sentMessages: [String] = []
     @State private var historyCursor: Int?
 
-    // Không chọn account riêng theo từng server nữa: luôn dùng account đang được
-    // chọn ở carousel trên đầu màn hình danh sách server (MCAccountStore.currentAccount).
-    private var account: MCAccount? { accountStore.currentAccount }
+    private var account: MCAccount? { accountStore.selectedAccount ?? accountStore.account(for: profile.accountId) }
 
     var body: some View {
         ZStack {
@@ -111,7 +109,7 @@ struct MCChatView: View {
         }
         .onAppear {
             guard let account else {
-                client.appendUserInfo("Chưa có tài khoản nào — vào màn danh sách server để thêm username.")
+                client.appendUserInfo("Chưa chọn Minecraft username cho server này.")
                 return
             }
             // MCClient là singleton nên khi quay lại từ nút <, chat/player/inventory

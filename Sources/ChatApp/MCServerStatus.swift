@@ -94,7 +94,8 @@ final class MCServerStatusService {
                 switch state {
                 case .ready:
                     let handshake = MCServerStatusService.makeHandshake(host: profile.host,
-                                                                          port: profile.port)
+                                                                          port: profile.port,
+                                                                          protocolVersion: profile.protocolVersion)
                     let request = MCServerStatusService.makeRequest()
                     connection.send(content: handshake + request, completion: .contentProcessed { error in
                         if let error {
@@ -121,10 +122,10 @@ final class MCServerStatusService {
         }
     }
 
-    private static func makeHandshake(host: String, port: UInt16) -> Data {
+    private static func makeHandshake(host: String, port: UInt16, protocolVersion: Int32) -> Data {
         var body = Data()
         body.append(contentsOf: MCVarInt.encode(0x00))
-        body.append(contentsOf: MCVarInt.encode(760))
+        body.append(contentsOf: MCVarInt.encode(protocolVersion))
         body.appendMCString(host)
         body.append(UInt8((port >> 8) & 0xFF))
         body.append(UInt8(port & 0xFF))

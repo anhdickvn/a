@@ -30,6 +30,7 @@ struct MCServerListView: View {
             .sheet(isPresented: $showAddAccount) {
                 MCAccountEditView(account: MCAccount(username: "")) { newAccount in
                     accountStore.accounts.append(newAccount)
+                    accountStore.selectedAccountId = newAccount.id
                 }
             }
             .sheet(item: $editingAccount) { account in
@@ -42,7 +43,7 @@ struct MCServerListView: View {
             .sheet(isPresented: $showAdd) {
                 MCServerEditView(
                     profile: MCServerProfile(name: "Tôi Chơi Network", host: "proxy.toichoi.com", port: 54321,
-                                             useLogin: false, protocolVersion: 47)
+                                             accountId: accountStore.selectedAccountId, useLogin: false, protocolVersion: 47)
                 ) { newProfile in
                     store.profiles.append(newProfile)
                     refresh(profile: newProfile)
@@ -72,6 +73,9 @@ struct MCServerListView: View {
             }
             .onAppear {
                 store.ensureDefaultServer()
+                if accountStore.selectedAccountId == nil {
+                    accountStore.selectedAccountId = accountStore.accounts.first?.id
+                }
                 refreshAll()
             }
         }
@@ -135,12 +139,10 @@ struct MCServerListView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                TabView(selection: Binding(
-                    get: { accountStore.selectedAccountId ?? accountStore.accounts.first?.id },
-                    set: { accountStore.selectedAccountId = $0 }
-                )) {
+                TabView(selection: $accountStore.selectedAccountId) {
                     ForEach(accountStore.accounts) { account in
-                        accountCard(account).tag(Optional(account.id))
+                        accountCard(account)
+                            .tag(Optional(account.id))
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: accountStore.accounts.count > 1 ? .automatic : .never))
@@ -155,6 +157,9 @@ struct MCServerListView: View {
             if isEditingAccounts {
                 Button {
                     accountStore.accounts.removeAll { $0.id == account.id }
+                    for index in store.profiles.indices where store.profiles[index].accountId == account.id {
+                        store.profiles[index].accountId = nil
+                    }
                 } label: {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 26))
@@ -170,12 +175,17 @@ struct MCServerListView: View {
                 Text(account.username)
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
-                Text((accountStore.selectedAccountId ?? accountStore.accounts.first?.id) == account.id
-                     ? "Đang dùng — vào server nào cũng dùng account này" : "Offline account")
+                Text("Offline account")
                     .font(.system(size: 13))
-                    .foregroundStyle((accountStore.selectedAccountId ?? accountStore.accounts.first?.id) == account.id ? .green : .secondary)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            if accountStore.selectedAccountId == account.id && !isEditingAccounts {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .transition(.scale.combined(with: .opacity))
+            }
             if isEditingAccounts {
                 Button { editingAccount = account } label: {
                     Image(systemName: "pencil")
@@ -190,7 +200,11 @@ struct MCServerListView: View {
         }
         .padding(.horizontal, 24)
         .contentShape(Rectangle())
-        .onTapGesture { if !isEditingAccounts { editingAccount = account } }
+        .onTapGesture {
+            if !isEditingAccounts {
+                accountStore.selectedAccountId = account.id
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: isEditingAccounts)
     }
 
@@ -424,14 +438,15 @@ struct MCServerEditView: View {
                     TextField("Port", value: $profile.port, format: .number)
                         .keyboardType(.numberPad)
                 }
-                Section {
+                Section("Minecraft version") {
                     Picker("Server version", selection: $profile.protocolVersion) {
                         ForEach(MCVersionOption.all) { option in
                             Text(option.label).tag(option.protocolVersion)
                         }
                     }
-                } footer: {
-                    Text("Chọn đúng version thật của server (vd 1.12.2) để tránh bị kick do sai protocol.")
+                    Text("Proxy Tôi Chơi :54321 đã được kiểm tra và đang quảng bá protocol 47 (Minecraft 1.8.x). Profile mặc định của proxy dùng 1.8.9.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Đăng nhập tự động") {
                     Toggle("Sử dụng /login khi vào server", isOn: $profile.useLogin)
@@ -441,12 +456,19 @@ struct MCServerEditView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("Username dùng khi vào server này") {
-                    if let current = accountStore.currentAccount {
-                        Text("\(current.username) (account đang chọn ở màn danh sách server)")
+                Section("Tài khoản") {
+                    if let account = accountStore.selectedAccount {
+                        HStack {
+                            Text("Đang dùng")
+                            Spacer()
+                            Text(account.username)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("Server sẽ luôn dùng tài khoản đang được chọn ở mục Accounts.")
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Chưa có account nào — thêm ở màn danh sách server trước.")
+                        Text("Hãy chọn hoặc thêm một tài khoản ở mục Accounts.")
                             .foregroundStyle(.secondary)
                     }
                 }

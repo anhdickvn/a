@@ -48,22 +48,21 @@ final class MCClient: ObservableObject {
     @Published var foodSaturation: Float = 5
 
 
-    /// Fallback nếu server profile không chỉ định protocol version cụ thể.
-    private let fallbackProtocolVersion: Int32 = 760
-    private var protocolVersion: Int32 = 760
+    /// Fallback cho proxy Tôi Chơi :54321 khi profile chưa có protocol cụ thể.
+    private let fallbackProtocolVersion: Int32 = 47
+    private var protocolVersion: Int32 = 47
     private var useLoginForSession = false
 
     private var connection: NWConnection?
     private let buffer = MCByteBuffer()
     private var compressionThreshold: Int32 = -1 // -1 = tắt nén
     private var compressionFailureCount = 0
+    private var serverDifficulty: UInt8 = 2
+    private var clientSettingsSent = false
+    private var lastReceivedPlayPacketID: Int32?
     private var lastCompressionFailureAt: TimeInterval = 0
     private var connectAttemptToken = UUID()
     private var drainScheduled = false
-    /// true nếu đã nhận được ít nhất 1 byte từ server trong lần kết nối hiện tại — dùng để
-    /// phân biệt "server đóng ngay không gửi gì" (rất có thể do anti-bot lọc) với "đã login
-    /// xong rồi mới rớt mạng giữa chừng" khi hiện thông báo lỗi.
-    private var receivedAnyBytesThisAttempt = false
 
     private var host: String = ""
     private var port: UInt16 = 25565
@@ -84,6 +83,9 @@ final class MCClient: ObservableObject {
     private var movementTasks: [String: Task<Void, Never>] = [:]
     private var movementPrimeTask: Task<Void, Never>?
     private var didPrimeMovementThisSession = false
+    /// Chỉ log một số packet Play đầu tiên của protocol 47 để chẩn đoán disconnect
+    /// mà không làm ngập màn hình Logs khi server gửi world/entity packets.
+    private var debugPlayPacketsRemaining = 25
 
     /// Trạng thái hiển thị cho giao diện điều khiển.
     /// Giữ logic vật lý nội bộ nhưng cho SwiftUI đọc được an toàn.
@@ -147,7 +149,7 @@ final class MCClient: ObservableObject {
 
     /// `username`: lấy từ MCAccount đã chọn cho server này (đăng nhập kiểu offline/cracked).
     /// `protocolVersion`: chọn đúng version thật của server (vd 1.12.2 = 340) trong màn Sửa server,
-    /// tránh bị kick do sai protocol. Không truyền thì dùng mặc định 760.
+    /// tránh bị kick do sai protocol. Không truyền thì dùng mặc định 47.
     func connect(host: String, port: UInt16, username: String, useLogin: Bool = false,
                  protocolVersion: Int32? = nil) {
         disconnect(silent: true)
@@ -157,6 +159,11 @@ final class MCClient: ObservableObject {
         self.host = host
         self.port = port
         self.username = username
+        self.compressionThreshold = -1
+        self.compressionFailureCount = 0
+        self.serverDifficulty = 2
+        self.clientSettingsSent = false
+        self.lastReceivedPlayPacketID = nil
         let token = UUID()
         connectAttemptToken = token
 
@@ -201,6 +208,7 @@ final class MCClient: ObservableObject {
         movementPrimeTask?.cancel()
         movementPrimeTask = nil
         didPrimeMovementThisSession = false
+        debugPlayPacketsRemaining = 25
         loginAutomationGeneration = UUID()
         autoMenuSelectionPending = false
         autoMenuRetryCount = 0
@@ -245,18 +253,17 @@ final class MCClient: ObservableObject {
     // MARK: - Kết nối thật (login)
 
     private func openMainConnection(token: UUID) {
-        // Bật TCP_NODELAY (tắt thuật toán Nagle): gửi từng gói ngay khi có thể thay vì
-        // gộp lại chờ ACK. Nhiều anti-bot của proxy chống bot kiểm tra việc Handshake và
-        // Login Start có tới thành 2 TCP segment tách biệt giống client Minecraft thật hay
-        // không — nếu bị gộp làm 1 segment do Nagle, có thể bị coi là bot và bị đóng socket
-        // câm lặng (không gửi packet Kick nào cả, y hệt hiện tượng "Server đã đóng kết nối"
-        // xảy ra ngay sau khi gửi Login Start mà không nhận được gì).
+        // TCP_NODELAY: tránh để các packet Minecraft nhỏ bị giữ lại bởi Nagle.
+        // Đây là một tối ưu mạng, không phải cơ chế "bypass anti-bot".
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.noDelay = true
-        let params = NWParameters(tls: nil, tcp: tcpOptions)
-        let conn = NWConnection(host: .init(host), port: .init(rawValue: port) ?? 25565, using: params)
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        let conn = NWConnection(
+            host: .init(host),
+            port: .init(rawValue: port) ?? 25565,
+            using: parameters
+        )
         self.connection = conn
-        receivedAnyBytesThisAttempt = false
 
         conn.stateUpdateHandler = { [weak self] newState in
             Task { @MainActor in
@@ -383,9 +390,10 @@ final class MCClient: ObservableObject {
 
     private func startHandshakeAndLogin() {
         state = .loggingIn
-        appendLog(.info, "Đang đăng nhập (offline) với tên \(username)...")
+        appendLog(.info, "Đang đăng nhập (offline) với tên \(username) — Minecraft \(versionHint(for: protocolVersion)), protocol \(protocolVersion)...")
 
-        // Handshake (0x00): protocol version, địa chỉ, cổng, next state = 2 (Login)
+        // Handshake (0x00): protocol version, địa chỉ, cổng, next state = 2 (Login).
+        // Handshake vanilla: không thêm marker/mod handshake vào hostname.
         var hsPayload: [UInt8] = []
         hsPayload += MCVarInt.encode(protocolVersion)
         hsPayload += mcEncodeString(host)
@@ -393,18 +401,8 @@ final class MCClient: ObservableObject {
         hsPayload += MCVarInt.encode(2)
         send(packetId: 0x00, payload: hsPayload)
 
-        // Login Start (0x00): username; các trường optional của 1.19.2 để trống.
-        // Đợi 1 nhịp nhỏ trước khi gửi thay vì gửi liền tay: client Minecraft thật xử lý
-        // Handshake xong rồi mới build Login Start ở bước kế tiếp của game loop, nên 2 gói
-        // luôn tới server thành 2 TCP segment cách nhau vài ms — không dính liền làm 1 lần
-        // ghi. Nhiều anti-bot của proxy chống bot dựa vào đúng chi tiết này để phân biệt bot
-        // (gửi cả 2 gói dính liền ngay lập tức) với client thật, rồi âm thầm đóng socket
-        // không báo lý do nếu nghi là bot.
-        let attemptToken = connectAttemptToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            guard let self, self.connectAttemptToken == attemptToken else { return }
-            self.send(packetId: 0x00, payload: mcEncodeString(self.username))
-        }
+        // Login Start (0x00): protocol 47/1.8.x dùng đúng một trường username; các protocol mới sẽ cần layout riêng.
+        send(packetId: 0x00, payload: mcEncodeString(username))
     }
 
     // MARK: - Nhận dữ liệu
@@ -415,7 +413,6 @@ final class MCClient: ObservableObject {
             Task { @MainActor in
                 guard self.connectAttemptToken == token else { return }
                 if let data, !data.isEmpty {
-                    self.receivedAnyBytesThisAttempt = true
                     self.buffer.append(data)
                     self.drainPackets()
                 }
@@ -429,10 +426,10 @@ final class MCClient: ObservableObject {
                 }
                 if isComplete {
                     if self.state != .disconnected {
-                        if self.receivedAnyBytesThisAttempt {
-                            self.appendLog(.error, "Server đã đóng kết nối.")
+                        if let last = self.lastReceivedPlayPacketID {
+                            self.appendLog(.error, String(format: "Server đã đóng kết nối. PLAY packet cuối: 0x%02X", Int(last)))
                         } else {
-                            self.appendLog(.error, "Server đóng kết nối ngay lập tức mà không gửi lại gì cả — thường là do anti-bot/firewall của proxy chặn kết nối \"không giống client Minecraft thật\", không phải do sai version hay mất mạng.")
+                            self.appendLog(.error, "Server đã đóng kết nối. Chưa nhận PLAY packet nào.")
                         }
                         if self.shouldStayConnected {
                             self.scheduleReconnect(reason: "server đóng socket")
@@ -545,9 +542,9 @@ final class MCClient: ObservableObject {
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             state = .connected
-            // Minecraft 1.19.2 gửi Client Information ngay sau Login Success.
-            // Một số proxy/plugin chỉ bắt đầu gửi inventory/chat sau khi nhận packet này.
-            sendClientInformation()
+            debugPlayPacketsRemaining = 25
+            // 1.8.x: chờ Join Game rồi mới gửi Client Settings.
+            // Không gửi packet serverbound ngay trong Login Success callback.
             if UIApplication.shared.applicationState == .background {
                 BackgroundKeepAlive.shared.start()
             }
@@ -568,83 +565,336 @@ final class MCClient: ObservableObject {
         }
     }
 
-    /// Client Information / Settings — protocol 760, serverbound 0x08.
-    /// Gửi cấu hình tối thiểu tương đương Minecraft thật để proxy/plugin biết client
-    /// đã vào Play và cho phép chat + inventory interaction.
-    private func sendClientInformation() {
+    /// Client Settings — protocol 47 (Minecraft 1.8.x), serverbound 0x15.
+    /// Layout chính xác: Locale(String), View Distance(Byte), Chat Mode(Byte),
+    /// Chat Colors(Boolean), Displayed Skin Parts(Unsigned Byte).
+    private func sendClientSettingsForProtocol47() {
+        guard protocolVersion == 47, !clientSettingsSent else { return }
         var payload: [UInt8] = []
-        payload += mcEncodeString("vi_vn")
-        payload.append(12) // view distance
-        payload += MCVarInt.encode(0) // chat enabled
-        payload.append(1) // chat colors enabled
-        payload.append(0x7F) // all skin parts
-        payload += MCVarInt.encode(1) // main hand = right
-        payload.append(0) // text filtering disabled
-        payload.append(1) // allow server listings
-        send(packetId: 0x08, payload: payload)
+        payload += mcEncodeString("en_US")
+        payload.append(12)      // view distance
+        payload.append(0)       // chat mode: enabled
+        payload.append(1)       // chat colors: true
+        payload.append(0x7F)    // all vanilla skin/cape parts enabled
+        send(packetId: 0x15, payload: payload)
+        clientSettingsSent = true
+        appendLog(.info, "[DEBUG 1.8] Đã gửi Client Settings 0x15 (payload chuẩn 1.8)")
+    }
+
+    /// Protocol 47 serverbound Plugin Message. Vanilla 1.8 identifies itself
+    /// through the legacy MC|Brand channel. This is a normal protocol packet.
+    private func sendVanillaBrand47() {
+        guard protocolVersion == 47 else { return }
+        var payload: [UInt8] = []
+        payload += mcEncodeString("MC|Brand")
+        payload += mcEncodeString("vanilla")
+        send(packetId: 0x17, payload: payload)
+        appendLog(.info, "[DEBUG 1.8] Đã gửi MC|Brand = vanilla")
     }
 
     // MARK: - Play state
 
     private func handlePlayPacket(id: Int32, body: Data) {
+        if protocolVersion == 47 {
+            handlePlayPacket47(id: id, body: body)
+            return
+        }
+
+        // Legacy fallback cho các version mới hơn đang có trong project.
         switch id {
-        case 0x20: // Keep Alive (clientbound) — protocol 760 / 1.19.2
+        case 0x20:
             guard body.count >= 8 else { return }
-            let longBytes = Array(body.prefix(8))
-            send(packetId: 0x12, payload: longBytes) // Keep Alive (serverbound), protocol 760
-
-        case 0x0F: // Tab Complete (clientbound) — protocol 760
-            handleTabComplete(body)
-
-        case 0x37: // Player Info — protocol 760 / 1.19.2
-            handlePlayerListItem(body)
-
-        case 0x25: // Join Game — protocol 760
-            handleJoinGame(body)
-
-        case 0x3E: // Respawn — protocol 760
-            handleRespawn(body)
-
-        case 0x39: // Player Position And Look — protocol 760
-            handlePlayerPositionAndLook(body)
-
-        case 0x33: // Player Chat (clientbound) — protocol 760
-            handlePlayerChatPacket(body)
-
-        case 0x1A: // Disconnect (play)
+            send(packetId: 0x12, payload: Array(body.prefix(8)))
+        case 0x0F: handleTabComplete(body)
+        case 0x37: handlePlayerListItem(body)
+        case 0x25: handleJoinGame(body)
+        case 0x3E: handleRespawn(body)
+        case 0x39: handlePlayerPositionAndLook(body)
+        case 0x33: handlePlayerChatPacket(body)
+        case 0x1A:
             let (reason, _) = body.readMCString(from: 0) ?? ("Bạn đã bị ngắt kết nối.", 0)
             appendLog(.error, "Bị ngắt kết nối: \(prettyChatJSON(reason))")
-            if shouldStayConnected {
-                scheduleReconnect(reason: "server gửi Disconnect")
-            } else {
-                state = .disconnected
-                connection?.cancel()
-            }
+            shouldStayConnected = false
+            state = .failed(prettyChatJSON(reason))
+            connection?.cancel()
+        case 0x62: handleSystemChatPacket(body)
+        case 0x10: currentWindow = nil
+        case 0x2D: handleOpenWindow(body)
+        case 0x11: handleWindowItems(body)
+        case 0x13: handleSetSlot(body)
+        case 0x3D: handleResourcePackSend(body)
+        case 0x55: handleUpdateHealth(body)
+        default: break
+        }
+    }
 
-        case 0x62: // System Chat — protocol 760
-            handleSystemChatPacket(body)
+    /// Play packet IDs/layout của Minecraft Java 1.8.x (protocol 47).
+    /// Đây là đường chạy thực tế của proxy Tôi Chơi sau khi login thành công.
+    private func handlePlayPacket47(id: Int32, body: Data) {
+        lastReceivedPlayPacketID = id
+        if debugPlayPacketsRemaining > 0 {
+            debugPlayPacketsRemaining -= 1
+            appendLog(.info, String(format: "[DEBUG 1.8] RECV PLAY packet 0x%02X (%d bytes)", Int(id), body.count))
+        }
+        switch id {
+        case 0x00: // Keep Alive (clientbound)
+            // 1.8.x dùng VarInt, không phải Long 8-byte như 1.12+/1.19.
+            guard let (keepAliveId, _) = decodeVarInt(from: body, offset: 0) else { return }
+            send(packetId: 0x00, payload: MCVarInt.encode(keepAliveId))
 
-        case 0x10: // Close Window (clientbound) — protocol 760
+        case 0x01: // Join Game
+            handleJoinGame47(body)
+
+        case 0x02: // Chat Message
+            handleLegacyChatPacket47(body)
+
+        case 0x06: // Update Health
+            handleUpdateHealth47(body)
+
+        case 0x07: // Respawn
+            handleRespawn47(body)
+
+        case 0x08: // Player Position And Look
+            handlePlayerPositionAndLook47(body)
+
+        case 0x2D: // Open Window
+            handleOpenWindow47(body)
+
+        case 0x2E: // Close Window
             currentWindow = nil
 
-        case 0x2D: // Open Window — protocol 760
-            handleOpenWindow(body)
+        case 0x2F: // Set Slot
+            handleSetSlot47(body)
 
-        case 0x11: // Window Items — protocol 760
-            handleWindowItems(body)
+        case 0x30: // Window Items
+            handleWindowItems47(body)
 
-        case 0x13: // Set Slot — protocol 760
-            handleSetSlot(body)
+        case 0x38: // Player List Item
+            handlePlayerListItem47(body)
 
-        case 0x3D: // Resource Pack Send — protocol 760
-            handleResourcePackSend(body)
+        case 0x3F: // Plugin Message (clientbound)
+            handlePluginMessage47(body)
 
-        case 0x55: // Update Health — protocol 760
-            handleUpdateHealth(body)
+        case 0x40: // Disconnect (Play)
+            let (reason, _) = body.readMCString(from: 0) ?? ("Bạn đã bị ngắt kết nối.", 0)
+            appendLog(.error, "Bị ngắt kết nối: \(prettyChatJSON(reason))")
+            shouldStayConnected = false
+            state = .failed(prettyChatJSON(reason))
+            connection?.cancel()
+
+        case 0x48: // Resource Pack Send
+            handleResourcePackSend47(body)
 
         default:
-            break // các gói khác (world, entity...) bỏ qua có chủ đích
+            // Các packet world/entity/particle không cần cho client chat được bỏ qua.
+            break
         }
+    }
+
+    private func handleJoinGame47(_ body: Data) {
+        var idx = 0
+        // Protocol 47 / Minecraft 1.8: Entity ID (Int), Game Mode (Byte),
+        // Dimension (Byte), Difficulty (Byte), Max Players (Byte),
+        // Level Type (String), Reduced Debug Info (Boolean).
+        guard body.count >= 9 else {
+            appendLog(.error, "[DEBUG 1.8] Join Game quá ngắn: \(body.count) bytes")
+            return
+        }
+        idx += 4 // Entity ID
+        guard idx < body.count else { return }
+        idx += 1 // Game mode
+        guard idx < body.count else { return }
+        let dimension = Int32(Int8(bitPattern: body[body.startIndex + idx]))
+        idx += 1
+
+        guard idx < body.count else { return }
+        serverDifficulty = body[body.startIndex + idx]
+        idx += 1
+
+        guard idx < body.count else { return }
+        idx += 1 // max players
+
+        guard let (_, next) = body.readMCString(from: idx) else {
+            appendLog(.error, "[DEBUG 1.8] Không đọc được Level Type của Join Game")
+            return
+        }
+        idx = next
+        if idx < body.count { idx += 1 } // reduced debug info
+
+        currentDimension = dimensionName(dimension)
+        health = max(health, 1)
+        appendLog(.info, "[DEBUG 1.8] Join Game OK, dimension=\(dimension), difficulty=\(serverDifficulty)")
+
+        // Send the exact 1.8 client packets only after Join Game.
+        sendClientSettingsForProtocol47()
+        sendVanillaBrand47()
+    }
+
+    private func handleLegacyChatPacket47(_ body: Data) {
+        guard let (json, _) = body.readMCString(from: 0) else { return }
+        let segments = chatSegments(from: json)
+        let text = segments.map(\.text).joined()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        appendLog(.chat, text, segments: segments)
+    }
+
+    private func handleUpdateHealth47(_ body: Data) {
+        guard let healthValue = body.readF32BE(from: 0) else { return }
+        var idx = healthValue.1
+        guard let (foodValue, nextFood) = body.readI16BE(from: idx) else { return }; idx = nextFood
+        guard let saturation = body.readF32BE(from: idx)?.0 else { return }
+        health = max(0, healthValue.0)
+        food = max(0, min(20, Int(foodValue)))
+        foodSaturation = max(0, saturation)
+        if health <= 0 { appendLog(.error, "Bạn đã chết. Nhấn Respawn để hồi sinh.") }
+    }
+
+    private func handleRespawn47(_ body: Data) {
+        var idx = 0
+        guard let (dimension, nextDimension) = body.readI32BE(from: idx) else { return }; idx = nextDimension
+        if idx < body.count { idx += 1 } // difficulty
+        if idx < body.count { idx += 1 } // gamemode
+        guard body.readMCString(from: idx) != nil else { return } // level type
+        currentDimension = dimensionName(dimension)
+        health = 20; food = 20; foodSaturation = 5
+    }
+
+    private func handlePlayerPositionAndLook47(_ body: Data) {
+        var idx = 0
+        guard let x = body.readF64BE(from: idx) else { return }; idx = x.1
+        guard let y = body.readF64BE(from: idx) else { return }; idx = y.1
+        guard let z = body.readF64BE(from: idx) else { return }; idx = z.1
+        guard let yaw = body.readF32BE(from: idx) else { return }; idx = yaw.1
+        guard let pitch = body.readF32BE(from: idx) else { return }; idx = pitch.1
+        guard let flags = body.readU8(from: idx) else { return }; idx = flags.1
+
+        let f = flags.0
+        if (f & 0x01) != 0 { playerX += x.0 } else { playerX = x.0 }
+        if (f & 0x02) != 0 { playerY += y.0 } else { playerY = y.0 }
+        if (f & 0x04) != 0 { playerZ += z.0 } else { playerZ = z.0 }
+        if (f & 0x08) != 0 { playerYaw += yaw.0 } else { playerYaw = yaw.0 }
+        if (f & 0x10) != 0 { playerPitch += pitch.0 } else { playerPitch = pitch.0 }
+        isOnGround = true
+
+        // Protocol 47 KHÔNG có Teleport Confirm. Phải trả lại Player Position And Look
+        // (serverbound 0x06) với tọa độ/góc đã được cập nhật.
+        sendPlayerPositionAndLook47(onGround: true)
+    }
+
+    private func sendPlayerPositionAndLook47(onGround: Bool) {
+        var payload: [UInt8] = []
+        payload += playerX.mcBigEndianBytes
+        payload += playerY.mcBigEndianBytes
+        payload += playerZ.mcBigEndianBytes
+        payload += playerYaw.mcBigEndianBytes
+        payload += playerPitch.mcBigEndianBytes
+        payload.append(onGround ? 1 : 0)
+        send(packetId: 0x06, payload: payload)
+    }
+
+    private func handleOpenWindow47(_ body: Data) {
+        var idx = 0
+        guard let (windowId, next1) = body.readU8(from: idx) else { return }; idx = next1
+        guard let (_, next2) = body.readMCString(from: idx) else { return }; idx = next2 // window type
+        guard let (title, next3) = body.readMCString(from: idx) else { return }; idx = next3
+        guard let (slotCount, next4) = body.readU8(from: idx) else { return }; idx = next4
+        currentWindow = MCOpenWindow(windowId: windowId, title: prettyChatJSON(title), slotCount: Int(slotCount), stateId: 0, items: [:])
+        appendLog(.info, "Server mở 1 menu: \(prettyChatJSON(title))")
+    }
+
+    private func handleSetSlot47(_ body: Data) {
+        var idx = 0
+        guard let (windowId, next1) = body.readU8(from: idx) else { return }; idx = next1
+        guard let (slotRaw, next2) = body.readI16BE(from: idx) else { return }; idx = next2
+        let slot = Int(slotRaw)
+        guard let (item, _) = MCSlotParser.parse(body, from: idx, hotbarIndex: slot >= 36 && slot <= 44 ? slot - 36 : -1) else { return }
+        if windowId == 0 {
+            if let item { playerInventory[slot] = item } else { playerInventory.removeValue(forKey: slot) }
+            if (36...44).contains(slot) { hotbar[slot - 36] = item }
+        }
+    }
+
+    private func handleWindowItems47(_ body: Data) {
+        // 1.8: window id + short count + slot array + cursor slot. Chỉ parse player
+        // inventory (window 0); GUI chi tiết sẽ được nâng cấp riêng sau khi login ổn định.
+        var idx = 0
+        guard let (windowId, next1) = body.readU8(from: idx) else { return }; idx = next1
+        guard let (count, next2) = body.readI16BE(from: idx) else { return }; idx = next2
+        guard count >= 0 && count <= 256 else { return }
+        for slot in 0..<Int(count) {
+            guard let (item, next) = MCSlotParser.parse(body, from: idx, hotbarIndex: slot >= 36 && slot <= 44 ? slot - 36 : -1) else { return }
+            idx = next
+            if windowId == 0 {
+                if let item { playerInventory[slot] = item } else { playerInventory.removeValue(forKey: slot) }
+                if (36...44).contains(slot) { hotbar[slot - 36] = item }
+            }
+        }
+    }
+
+    private func handlePluginMessage47(_ body: Data) {
+        guard let (channel, next) = body.readMCString(from: 0) else { return }
+        appendLog(.info, "[DEBUG 1.8] RECV Plugin Message channel=\(channel), data=\(body.count - next) bytes")
+        if channel == "MC|Brand" {
+            var payload: [UInt8] = []
+            payload += mcEncodeString("MC|Brand")
+            payload += mcEncodeString("vanilla")
+            send(packetId: 0x17, payload: payload)
+            appendLog(.info, "[DEBUG 1.8] Trả lời MC|Brand = vanilla")
+        }
+    }
+
+    private func handlePlayerListItem47(_ body: Data) {
+        // 1.8 Player List Item: action VarInt, number VarInt, then UUID + fields.
+        // Chỉ cần ADD_PLAYER/REMOVE_PLAYER để autocomplete và skin lookup.
+        var idx = 0
+        guard let (action, n1) = decodeVarInt(from: body, offset: idx) else { return }; idx = n1
+        guard let (count, n2) = decodeVarInt(from: body, offset: idx) else { return }; idx = n2
+        var names = onlinePlayerNames
+        var uuidMap = playerUUIDByName
+        var changed = false
+        for _ in 0..<Int(count) {
+            guard idx + 16 <= body.count else { return }
+            let uuidData = body.subdata(in: idx..<(idx + 16)); idx += 16
+            let uuid = uuidData.withUnsafeBytes { raw -> String in
+                guard let base = raw.baseAddress else { return UUID().uuidString.lowercased() }
+                return NSUUID(uuidBytes: base.assumingMemoryBound(to: UInt8.self)).uuidString.lowercased()
+            }
+            switch action {
+            case 0:
+                guard let (name, nextName) = body.readMCString(from: idx) else { return }; idx = nextName
+                guard let (propertyCount, nextProperties) = decodeVarInt(from: body, offset: idx) else { return }; idx = nextProperties
+                for _ in 0..<Int(propertyCount) {
+                    guard let (_, a) = body.readMCString(from: idx) else { return }; idx = a
+                    guard let (_, b) = body.readMCString(from: idx) else { return }; idx = b
+                    guard idx < body.count else { return }
+                    let signed = body[body.startIndex + idx] != 0; idx += 1
+                    if signed { guard let (_, c) = body.readMCString(from: idx) else { return }; idx = c }
+                }
+                guard let (_, a) = decodeVarInt(from: body, offset: idx) else { return }; idx = a // gamemode
+                guard let (_, b) = decodeVarInt(from: body, offset: idx) else { return }; idx = b // ping
+                guard idx < body.count else { return }
+                let hasDisplay = body[body.startIndex + idx] != 0; idx += 1
+                if hasDisplay { guard let (_, c) = body.readMCString(from: idx) else { return }; idx = c }
+                names.insert(name); uuidMap[name] = uuid; playerNamesByUUID[uuid] = name; changed = true
+            case 4:
+                if let name = playerNamesByUUID.removeValue(forKey: uuid) { names.remove(name); uuidMap.removeValue(forKey: name); changed = true }
+            default:
+                // UPDATE_GAMEMODE/UPDATE_LATENCY/UPDATE_DISPLAY_NAME có layout riêng;
+                // bỏ qua packet này thay vì đoán byte và làm hỏng parser.
+                return
+            }
+        }
+        if changed { onlinePlayerNames = names; playerUUIDByName = uuidMap }
+    }
+
+    private func handleResourcePackSend47(_ body: Data) {
+        guard let (url, next) = body.readMCString(from: 0),
+              let (hash, _) = body.readMCString(from: next) else { return }
+        resourcePackPending = true
+        appendLog(.info, "Server gửi texture pack, bắt buộc tải và áp dụng...")
+        // Resource pack status serverbound 1.8: 0=success,1=declined,2=downloaded,3=accepted.
+        send(packetId: 0x19, payload: MCVarInt.encode(3))
+        downloadResourcePack(urlString: url, hash: hash)
     }
 
     /// 1.19.2 Player Chat: UUID + index + optional signature + message + phần metadata.
@@ -718,7 +968,12 @@ final class MCClient: ObservableObject {
             appendLog(.info, "Bạn chưa chết nên server không cần Respawn.")
             return
         }
-        send(packetId: 0x07, payload: MCVarInt.encode(0))
+        if protocolVersion == 47 {
+            // Client Status = 0x16, action 0 = perform respawn.
+            send(packetId: 0x16, payload: MCVarInt.encode(0))
+        } else {
+            send(packetId: 0x07, payload: MCVarInt.encode(0))
+        }
         appendLog(.info, "Đã gửi yêu cầu Respawn.")
     }
 
@@ -880,8 +1135,12 @@ final class MCClient: ObservableObject {
         payload += playerY.mcBigEndianBytes
         payload += playerZ.mcBigEndianBytes
         payload.append(onGround ? 1 : 0)
-        // Protocol 760 / Minecraft 1.19.2: Player Position = 0x14.
-        send(packetId: 0x14, payload: payload)
+        // Protocol 47: Player Position = 0x04.
+        if protocolVersion == 47 {
+            send(packetId: 0x04, payload: payload)
+        } else {
+            send(packetId: 0x14, payload: payload)
+        }
     }
 
     // MARK: - Player list + Tab completion
@@ -1168,22 +1427,32 @@ final class MCClient: ObservableObject {
     }
 
     private func sendWindowClick(windowId: UInt8, stateId: Int32, slot: Int, mouseButton: UInt8, mode: UInt8) {
-        // Protocol 760 / 1.19.2: Window Click = windowId + stateId + slot + button + mode
-        // + changedSlots(0) + cursorItem(empty).
-        var payload: [UInt8] = [windowId]
-        payload += MCVarInt.encode(stateId)
-        let slotBE = UInt16(bitPattern: Int16(slot))
-        payload += [UInt8(slotBE >> 8), UInt8(slotBE & 0xFF), mouseButton]
-        payload += MCVarInt.encode(Int32(mode))
-        payload += MCVarInt.encode(0) // changed slots count
-        payload.append(0) // empty cursor item
-        send(packetId: 0x0B, payload: payload)
+        if protocolVersion == 47 {
+            // Window Click 1.8: windowId + slot(short) + button(byte) + action(short) + mode(byte) + clicked item.
+            let slotBE = UInt16(bitPattern: Int16(slot))
+            var legacy: [UInt8] = [windowId, UInt8(slotBE >> 8), UInt8(slotBE & 0xFF), mouseButton]
+            windowActionCounter &+= 1
+            let actionBE = UInt16(bitPattern: windowActionCounter)
+            legacy += [UInt8(actionBE >> 8), UInt8(actionBE & 0xFF), mode]
+            legacy.append(0xFF) // clicked item = empty slot (short item id -1)
+            legacy.append(0xFF)
+            send(packetId: 0x0E, payload: legacy)
+        } else {
+            var payload: [UInt8] = [windowId]
+            payload += MCVarInt.encode(stateId)
+            let slotBE = UInt16(bitPattern: Int16(slot))
+            payload += [UInt8(slotBE >> 8), UInt8(slotBE & 0xFF), mouseButton]
+            payload += MCVarInt.encode(Int32(mode))
+            payload += MCVarInt.encode(0) // changed slots count
+            payload.append(0) // empty cursor item
+            send(packetId: 0x0B, payload: payload)
+        }
     }
 
     /// Đóng menu đang mở (báo cho server biết, giống bấm ESC/đóng GUI trong game thật).
     func closeCurrentWindow() {
         guard let window = currentWindow else { currentWindow = nil; return }
-        send(packetId: 0x0C, payload: [window.windowId]) // Close Window (serverbound)
+        send(packetId: protocolVersion == 47 ? 0x05 : 0x0C, payload: [window.windowId]) // Close Window
         currentWindow = nil
     }
 
@@ -1437,8 +1706,15 @@ final class MCClient: ObservableObject {
     /// Protocol 760: Held Item Change = 0x28, Use Item = 0x2A.
     func useHotbarItem(_ hotbarIndex: Int) {
         guard state == .connected, (0...8).contains(hotbarIndex) else { return }
-        send(packetId: 0x28, payload: [UInt8(hotbarIndex >> 8), UInt8(hotbarIndex & 0xFF)]) // Held Item Change (Short)
-        send(packetId: 0x2A, payload: MCVarInt.encode(0)) // Use Item, hand = 0 (main hand), protocol 760
+        if protocolVersion == 47 {
+            send(packetId: 0x09, payload: [UInt8(hotbarIndex >> 8), UInt8(hotbarIndex & 0xFF)]) // Held Item Change
+            // 1.8 does not have a simple hand-only Use Item packet; right-clicking a
+            // compass/item is done with Player Block Placement (0x08). Keep the existing
+            // interaction payload conservative and only send it for newer protocols.
+        } else {
+            send(packetId: 0x28, payload: [UInt8(hotbarIndex >> 8), UInt8(hotbarIndex & 0xFF)])
+            send(packetId: 0x2A, payload: MCVarInt.encode(0))
+        }
         appendLog(.info, "Đã chuột phải vào ô hotbar \(hotbarIndex + 1).")
     }
 
@@ -1457,9 +1733,8 @@ final class MCClient: ObservableObject {
 
     // MARK: - Gửi chat
 
-    /// Protocol 760 / 1.19.2: Chat Message serverbound có timestamp/salt và phần
-    /// acknowledgement. Server offline/proxy thường chấp nhận unsigned chat; gửi
-    /// đầy đủ khung packet để không bị kick/timeout khi gõ lệnh.
+    /// Chat Message serverbound: protocol 47 dùng packet 0x01 + một MC String;
+    /// các protocol mới hơn dùng khung timestamp/signature/acknowledgement riêng.
     private func sendChatPacket(_ text: String) {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000.0)
         var payload: [UInt8] = []
@@ -1469,7 +1744,7 @@ final class MCClient: ObservableObject {
         payload.append(0) // Has Signature = false
         payload += MCVarInt.encode(0) // Message Count
         payload += Array(repeating: UInt8(0), count: 3) // Acknowledged bitset: 20 bits
-        send(packetId: 0x03, payload: payload)
+        send(packetId: protocolVersion == 47 ? 0x01 : 0x03, payload: protocolVersion == 47 ? mcEncodeString(text) : payload)
     }
 
     func sendChat(_ text: String) {
