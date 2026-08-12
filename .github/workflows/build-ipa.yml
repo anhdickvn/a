@@ -15,12 +15,6 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Check files
-      run: |
-        pwd
-        ls -la
-        find . -name "project.yml"
-
     - name: Install XcodeGen
       run: |
         brew install xcodegen
@@ -28,10 +22,9 @@ jobs:
     - name: Generate Xcode Project
       run: |
         xcodegen generate
-        ls -la
-        test -d ChatMC.xcodeproj
+        xcodebuild -list -project ChatMC.xcodeproj
 
-    - name: Build Archive
+    - name: Archive
       run: |
         xcodebuild archive \
         -project ChatMC.xcodeproj \
@@ -41,8 +34,3 @@ jobs:
         -destination generic/platform=iOS \
         CODE_SIGNING_ALLOWED=NO \
         CODE_SIGNING_REQUIRED=NO
-
-    - name: Export files
-      if: success()
-      run: |
-        ls -la build
