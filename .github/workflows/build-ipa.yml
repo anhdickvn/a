@@ -2,14 +2,19 @@ name: Build IPA
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
       - master
 
+
 jobs:
+
   build:
+
     runs-on: macos-26
+
 
     steps:
 
@@ -22,39 +27,49 @@ jobs:
         brew install xcodegen
 
 
+    - name: Clean old project
+      run: |
+        rm -rf ChatMC.xcodeproj
+
+
     - name: Generate Xcode project
       run: |
         xcodegen generate
-        ls -la
+
+        echo "===== PROJECT LIST ====="
         xcodebuild -list -project ChatMC.xcodeproj
 
 
     - name: Archive
       run: |
         xcodebuild archive \
-          -project ChatMC.xcodeproj \
-          -scheme ChatMC \
-          -archivePath build/ChatMC.xcarchive \
-          -sdk iphoneos \
-          -destination 'generic/platform=iOS' \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGNING_REQUIRED=NO
+        -project ChatMC.xcodeproj \
+        -scheme ChatMC \
+        -archivePath build/ChatMC.xcarchive \
+        -sdk iphoneos \
+        -destination generic/platform=iOS \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO
 
 
-    - name: Package unsigned app
+    - name: Create unsigned IPA
       run: |
+
         mkdir -p build/Payload
 
         cp -R \
         build/ChatMC.xcarchive/Products/Applications/ChatMC.app \
-        build/Payload/ChatMC.app
+        build/Payload/
+
 
         cd build
+
         zip -qry ChatMC-unsigned.ipa Payload
 
 
-    - name: Upload artifact
+    - name: Upload IPA
       uses: actions/upload-artifact@v4
+
       with:
-        name: ChatMC-unsigned-ipa
+        name: ChatMC-IPA
         path: build/ChatMC-unsigned.ipa
