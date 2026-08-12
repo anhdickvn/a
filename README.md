@@ -1,18 +1,19 @@
-Minecraft FIXED UI v43
+# Minecraft v45 — Chat/Item/Background/WASD Fix
 
-Based on v42.
+Built from v44 source.
 
-Movement changes:
-- W/A/S/D: one conservative 0x0D position move per tap (~0.06 block).
-- At most one 0x0E position+look fallback after 120ms if no server correction.
-- No idle player-position heartbeat; server Keep Alive remains authoritative.
-- SPACE: one small upward 0x0E jump packet, gated by server onGround state.
-- Server correction cancels any movement probe.
+## Fixes in v45
+- WASD: finite 3-tick movement pulse (~0.18 block total) from the current server-authoritative position. No idle movement loop.
+- SPACE: one jump impulse plus short authoritative resync. No repeated jump physics loop.
+- Background: suppress POSIX/NWConnection 53/89 UI errors while app is in background; reconnect is deferred until foreground.
+- Item `...`: opens the four actions directly: Display lore, Left click, Right click, Drop all. Drop all uses protocol 340 Click Window mode=4/button=1 (Ctrl+Q stack drop).
+- Chat item mentions: standard hoverEvent.show_item remains clickable; inline plugin text such as `item.diamondSword.name 1x` is also made tappable and opens a tooltip with friendly name/count/icon when possible.
+- URL: every detected/open_url link is underlined while preserving its Minecraft color and remains tappable.
+- GUI/item tooltip keeps lore/enchantment lines parsed from NBT.
 
-Build compatibility:
-- Removed iOS 17-only ContentUnavailableView usage.
-- Uses the iOS 16-compatible onChange(of:perform:) form.
-- Removed the invalid animated: argument from UITextView.scrollRangeToVisible.
+## WASD test
+Settings -> Ghi Debug WASD / Jump -> enable, enter server, tap W, A, S, D, Space once each.
+Expected trace includes `MOVE PULSE START`, three `MOVE PULSE tick` lines, `WIRE TX 0x0D`, and no repeating movement after the third tick.
 
-
-V44 hotfix: replaced POSIXErrorCode.description with String(describing:) for iOS SDK compatibility.
+## Note
+The container used for this patch has Swift 6.2 frontend parsing available but not Apple's iPhoneOS/UIKit/SwiftUI SDK, so a full iOS archive cannot be performed here. All Swift sources were checked with `swiftc -frontend -parse`.
