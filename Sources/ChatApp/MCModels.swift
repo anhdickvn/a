@@ -40,6 +40,38 @@ final class MCAccountStore: ObservableObject {
     }
 }
 
+// MARK: - Danh sách version Minecraft hỗ trợ chọn thủ công (thay vì hardcode 1 protocol)
+
+struct MCVersionOption: Identifiable, Hashable {
+    var id: Int32 { protocolVersion }
+    let label: String
+    let protocolVersion: Int32
+
+    static let all: [MCVersionOption] = [
+        .init(label: "1.7.10", protocolVersion: 5),
+        .init(label: "1.8.9", protocolVersion: 47),
+        .init(label: "1.9.4", protocolVersion: 110),
+        .init(label: "1.10.2", protocolVersion: 210),
+        .init(label: "1.11.2", protocolVersion: 316),
+        .init(label: "1.12.2", protocolVersion: 340),
+        .init(label: "1.13.2", protocolVersion: 404),
+        .init(label: "1.14.4", protocolVersion: 498),
+        .init(label: "1.15.2", protocolVersion: 578),
+        .init(label: "1.16.5", protocolVersion: 754),
+        .init(label: "1.17.1", protocolVersion: 756),
+        .init(label: "1.18.2", protocolVersion: 758),
+        .init(label: "1.19.2", protocolVersion: 760),
+        .init(label: "1.19.4", protocolVersion: 762),
+        .init(label: "1.20.1", protocolVersion: 763),
+        .init(label: "1.20.4", protocolVersion: 765),
+        .init(label: "1.21.1", protocolVersion: 767),
+    ]
+
+    static func label(for protocolVersion: Int32) -> String {
+        all.first { $0.protocolVersion == protocolVersion }?.label ?? "Protocol \(protocolVersion)"
+    }
+}
+
 // MARK: - Hồ sơ 1 server Minecraft đã lưu
 
 struct MCServerProfile: Identifiable, Codable, Equatable {
@@ -51,18 +83,27 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
     /// Nếu bật, sau khi Login Success app sẽ tự gửi /login <mật khẩu> và chỉ khi đó
     /// mới chạy flow chuột phải la bàn / mở menu server. Tắt = tuyệt đối không tự gửi login.
     var useLogin: Bool = false
+    /// Protocol version dùng khi handshake login. Chọn đúng version thật của server
+    /// (vd 1.12.2 = 340) thay vì để app tự đoán/hardcode, tránh bị kick "Outdated client".
+    var protocolVersion: Int32 = 760
+    /// Bật nếu server chạy Forge — app sẽ gắn marker FML vào địa chỉ khi handshake để
+    /// server Forge chấp nhận client vanilla-like thay vì từ chối do thiếu mod list.
+    var isForge: Bool = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, host, port, accountId, useLogin
+        case id, name, host, port, accountId, useLogin, protocolVersion, isForge
     }
 
-    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565, accountId: UUID? = nil, useLogin: Bool = false) {
+    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565, accountId: UUID? = nil,
+         useLogin: Bool = false, protocolVersion: Int32 = 760, isForge: Bool = false) {
         self.id = id
         self.name = name
         self.host = host
         self.port = port
         self.accountId = accountId
         self.useLogin = useLogin
+        self.protocolVersion = protocolVersion
+        self.isForge = isForge
     }
 
     init(from decoder: Decoder) throws {
@@ -73,6 +114,8 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
         port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 25565
         accountId = try c.decodeIfPresent(UUID.self, forKey: .accountId)
         useLogin = try c.decodeIfPresent(Bool.self, forKey: .useLogin) ?? false
+        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 760
+        isForge = try c.decodeIfPresent(Bool.self, forKey: .isForge) ?? false
     }
 }
 
@@ -102,7 +145,8 @@ final class MCProfileStore: ObservableObject {
             $0.host.caseInsensitiveCompare("proxy.toichoi.com") == .orderedSame && $0.port == 54321
         }
         guard !exists else { return }
-        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321, accountId: nil), at: 0)
+        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321, accountId: nil,
+                                         protocolVersion: 47), at: 0)
     }
 }
 

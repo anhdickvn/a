@@ -115,7 +115,8 @@ struct MCChatView: View {
             // MCClient là singleton nên khi quay lại từ nút <, chat/player/inventory
             // và socket cũ vẫn còn nguyên. Không tạo kết nối thứ hai nếu phiên vẫn sống.
             guard !client.isConnectedTo(host: profile.host, port: profile.port, username: account.username) else { return }
-            client.connect(host: profile.host, port: profile.port, username: account.username, useLogin: profile.useLogin)
+            client.connect(host: profile.host, port: profile.port, username: account.username, useLogin: profile.useLogin,
+                           protocolVersion: profile.protocolVersion, isForge: profile.isForge)
         }
         // Chỉ khởi động tác vụ cache; tuyệt đối không await trước khi connect.
         .task(priority: .utility) { await resourcePack.ensureVanillaAssets() }

@@ -8,7 +8,6 @@ struct MCServerListView: View {
     @State private var editingProfile: MCServerProfile?
     @State private var editingAccount: MCAccount?
     @State private var deleteProfile: MCServerProfile?
-    @State private var deleteAccount: MCAccount?
     @State private var statuses: [UUID: MCServerStatus] = [:]
     @State private var isRefreshing = false
     @State private var isEditingAccounts = false
@@ -43,7 +42,7 @@ struct MCServerListView: View {
             .sheet(isPresented: $showAdd) {
                 MCServerEditView(
                     profile: MCServerProfile(name: "Tôi Chơi Network", host: "proxy.toichoi.com", port: 54321,
-                                             accountId: accountStore.accounts.first?.id, useLogin: false)
+                                             accountId: accountStore.accounts.first?.id, useLogin: false, protocolVersion: 47)
                 ) { newProfile in
                     store.profiles.append(newProfile)
                     refresh(profile: newProfile)
@@ -58,20 +57,6 @@ struct MCServerListView: View {
                     }
                 }
                 .environmentObject(accountStore)
-            }
-            .confirmationDialog("Xóa username này?", isPresented: Binding(
-                get: { deleteAccount != nil }, set: { if !$0 { deleteAccount = nil } }
-            ), titleVisibility: .visible) {
-                Button("Xóa", role: .destructive) {
-                    if let account = deleteAccount {
-                        accountStore.accounts.removeAll { $0.id == account.id }
-                        for index in store.profiles.indices where store.profiles[index].accountId == account.id {
-                            store.profiles[index].accountId = nil
-                        }
-                    }
-                    deleteAccount = nil
-                }
-                Button("Hủy", role: .cancel) { deleteAccount = nil }
             }
             .confirmationDialog("Xóa server này?", isPresented: Binding(
                 get: { deleteProfile != nil }, set: { if !$0 { deleteProfile = nil } }
@@ -165,7 +150,12 @@ struct MCServerListView: View {
     private func accountCard(_ account: MCAccount) -> some View {
         HStack(spacing: 14) {
             if isEditingAccounts {
-                Button { deleteAccount = account } label: {
+                Button {
+                    accountStore.accounts.removeAll { $0.id == account.id }
+                    for index in store.profiles.indices where store.profiles[index].accountId == account.id {
+                        store.profiles[index].accountId = nil
+                    }
+                } label: {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 26))
                         .foregroundStyle(.red)
@@ -432,6 +422,16 @@ struct MCServerEditView: View {
                         .autocorrectionDisabled()
                     TextField("Port", value: $profile.port, format: .number)
                         .keyboardType(.numberPad)
+                }
+                Section {
+                    Picker("Server version", selection: $profile.protocolVersion) {
+                        ForEach(MCVersionOption.all) { option in
+                            Text(option.label).tag(option.protocolVersion)
+                        }
+                    }
+                    Toggle("Forge", isOn: $profile.isForge)
+                } footer: {
+                    Text("Chọn đúng version thật của server (vd 1.12.2) để tránh bị kick do sai protocol. Bật Forge nếu server chạy Forge mod.")
                 }
                 Section("Đăng nhập tự động") {
                     Toggle("Sử dụng /login khi vào server", isOn: $profile.useLogin)
