@@ -40,14 +40,6 @@ final class MCByteBuffer {
         storage.append(data)
     }
 
-    /// Xoá toàn bộ byte của phiên TCP cũ trước khi reconnect. Nếu giữ lại một
-    /// packet chưa đủ từ socket cũ, lần kết nối mới có thể đọc nhầm length/packetId
-    /// và tạo ra lỗi nén giả hoặc treo parser.
-    func reset() {
-        storage.removeAll(keepingCapacity: true)
-        readIndex = 0
-    }
-
     /// Số byte còn chưa đọc.
     var remainingCount: Int { storage.count - readIndex }
 

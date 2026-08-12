@@ -10,10 +10,13 @@ struct MinecraftApp: App {
         WindowGroup {
             TabView {
                 MCServerListView()
-                    .tabItem { Label("Chat", systemImage: "message.fill") }
+                    .tabItem { Label("ChatCraft", systemImage: "message.fill") }
 
                 MCLogsView()
                     .tabItem { Label("Logs", systemImage: "archivebox.fill") }
+
+                MCInAppPurchasesView()
+                    .tabItem { Label("In-App purchases", systemImage: "bag.fill") }
 
                 MCSettingsView()
                     .tabItem { Label("Settings", systemImage: "gearshape.fill") }
@@ -26,7 +29,6 @@ struct MinecraftApp: App {
             .environmentObject(themeStore)
             .preferredColorScheme(themeStore.mode.colorScheme ?? .dark)
             .tint(.blue)
-            .task(priority: .utility) { await MCResourcePackStore.shared.ensureVanillaAssets() }
         }
     }
 }

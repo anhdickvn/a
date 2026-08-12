@@ -20,28 +20,14 @@ final class MCResourcePackStore: ObservableObject {
     private var files: [String: URL] = [:]
     private var vanillaFiles: [String: URL] = [:]
     private var imageCache: [String: UIImage] = [:]
-    private var itemImageCache: [String: UIImage] = [:]
     private var modelTextureCache: [String: String?] = [:]
-    @Published private(set) var vanillaReady = false
+    private var vanillaReady = false
     private var vanillaLoading = false
 
     private init() {
         if let saved = UserDefaults.standard.string(forKey: "mc_active_resource_pack"),
            FileManager.default.fileExists(atPath: saved) {
-            let folder = URL(fileURLWithPath: saved)
-            let displayName = folder.lastPathComponent
-            Task { [weak self] in
-                let index = await Task.detached(priority: .utility) {
-                    MCResourcePackStore.buildIndexDetached(folder)
-                }.value
-                guard let self else { return }
-                self.files = index
-                self.imageCache.removeAll()
-                self.itemImageCache.removeAll()
-                self.modelTextureCache.removeAll()
-                self.activePackURL = folder
-                self.activePackName = displayName
-            }
+            loadExtractedPack(URL(fileURLWithPath: saved), displayName: URL(fileURLWithPath: saved).lastPathComponent)
         }
     }
 
@@ -57,21 +43,10 @@ final class MCResourcePackStore: ObservableObject {
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 
         let folder = base.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let displayName = zipURL.deletingPathExtension().lastPathComponent
-        try await Task.detached(priority: .utility) {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try FileManager.default.unzipItem(at: zipURL, to: folder)
-        }.value
-        let index = await Task.detached(priority: .utility) {
-            MCResourcePackStore.buildIndexDetached(folder)
-        }.value
-        files = index
-        imageCache.removeAll()
-        itemImageCache.removeAll()
-        modelTextureCache.removeAll()
-        activePackURL = folder
-        activePackName = displayName
-        UserDefaults.standard.set(folder.path, forKey: "mc_active_resource_pack")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.unzipItem(at: zipURL, to: folder)
+
+        loadExtractedPack(folder, displayName: zipURL.deletingPathExtension().lastPathComponent)
     }
 
     func installDownloadedPack(zipURL: URL, name: String) async throws {
@@ -81,25 +56,6 @@ final class MCResourcePackStore: ObservableObject {
                                                create: true)
             .appendingPathComponent("TexturePacks", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        // Cache extracted folder theo hash/tên pack. Cùng một texture pack chỉ giải nén
-        // đúng 1 lần; những lần reconnect sau chỉ index lại thư mục đã có.
-        let cacheKey = "mc_resource_pack_extracted_\(name)"
-        if let cachedPath = UserDefaults.standard.string(forKey: cacheKey) {
-            let cachedFolder = URL(fileURLWithPath: cachedPath)
-            if FileManager.default.fileExists(atPath: cachedFolder.path) {
-                let index = await Task.detached(priority: .utility) {
-                    MCResourcePackStore.buildIndexDetached(cachedFolder)
-                }.value
-                files = index
-                imageCache.removeAll()
-                itemImageCache.removeAll()
-                modelTextureCache.removeAll()
-                activePackURL = cachedFolder
-                activePackName = name
-                return
-            }
-        }
-
         let folder = base.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
         // ZIP extraction can take hundreds of milliseconds or several seconds. Never do it
@@ -110,17 +66,7 @@ final class MCResourcePackStore: ObservableObject {
             try FileManager.default.unzipItem(at: zipURL, to: folder)
         }.value
 
-        let index = await Task.detached(priority: .utility) {
-            MCResourcePackStore.buildIndexDetached(folder)
-        }.value
-        files = index
-        imageCache.removeAll()
-        itemImageCache.removeAll()
-        modelTextureCache.removeAll()
-        activePackURL = folder
-        activePackName = name
-        UserDefaults.standard.set(folder.path, forKey: "mc_active_resource_pack")
-        UserDefaults.standard.set(folder.path, forKey: cacheKey)
+        loadExtractedPack(folder, displayName: name)
     }
 
     func clearPack() {
@@ -128,7 +74,6 @@ final class MCResourcePackStore: ObservableObject {
         activePackURL = nil
         files.removeAll()
         imageCache.removeAll()
-        itemImageCache.removeAll()
         modelTextureCache.removeAll()
         UserDefaults.standard.removeObject(forKey: "mc_active_resource_pack")
     }
@@ -142,20 +87,18 @@ final class MCResourcePackStore: ObservableObject {
     }
 
     private func image(for itemId: Int16, damage: Int16) -> UIImage? {
-        let itemKey = "\(itemId):\(damage)"
-        if let cached = itemImageCache[itemKey] { return cached }
-
         // Server pack được ưu tiên; vanilla 1.12.2 là fallback. Không dùng emoji vì
         // người dùng yêu cầu icon item Minecraft thật.
+
+        // Ưu tiên model JSON của resource pack server. Model có parent + overrides +
+        // textures được resolve đệ quy giống Minecraft client thay vì chỉ đọc layer0.
         for name in mcLegacyItemTextureNames(itemId: itemId, damage: damage) {
             if let texture = resolveItemTexture(modelName: name, itemId: itemId, damage: damage, visited: []) ,
                let image = imageForTextureReference(texture) {
-                itemImageCache[itemKey] = image
                 return image
             }
 
             if let image = imageForTextureReference("items/\(name)") ?? imageForTextureReference("blocks/\(name)") {
-                itemImageCache[itemKey] = image
                 return image
             }
         }
@@ -259,65 +202,37 @@ final class MCResourcePackStore: ObservableObject {
         return image
     }
 
-    /// Tải vanilla Minecraft 1.12.2 chính thức vào sandbox lần đầu.
-    /// Sau lần đầu, chỉ dùng thư mục assets đã lưu vĩnh viễn; không tải lại client.jar.
-    /// Toàn bộ download/extract/index chạy background để màn ChatCraft vào ngay.
+    /// Tải vanilla Minecraft 1.12.2 chính thức vào sandbox lần đầu. Đây không được đóng gói
+    /// trong repo; app tự tải client.jar và chỉ dùng thư mục assets để hiển thị icon.
     func ensureVanillaAssets() async {
         guard !vanillaReady, !vanillaLoading else { return }
         vanillaLoading = true
+        defer { vanillaLoading = false }
 
         do {
             let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("VanillaMinecraft-1.12.2", isDirectory: true)
-
-            let index: [String: URL] = try await Task.detached(priority: .utility) {
-                try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-
-                // Bản cũ của app đã giải nén vào `extracted`, vì vậy phải kiểm tra cả
-                // base/assets và base/extracted/assets. Đây là lỗi khiến app tải lại 1.12.2
-                // mỗi lần mở và gây lag vài giây ở lần vào server tiếp theo.
-                let directAssets = base.appendingPathComponent("assets/minecraft/models/item")
-                let extracted = base.appendingPathComponent("extracted", isDirectory: true)
-                let extractedAssets = extracted.appendingPathComponent("assets/minecraft/models/item")
-                let sourceFolder: URL
-
-                if FileManager.default.fileExists(atPath: directAssets.path) {
-                    sourceFolder = base
-                } else if FileManager.default.fileExists(atPath: extractedAssets.path) {
-                    sourceFolder = extracted
-                } else {
-                    let jarURL = base.appendingPathComponent("1.12.2.jar")
-                    if !FileManager.default.fileExists(atPath: jarURL.path) {
-                        let remote = URL(string: "https://piston-data.mojang.com/v1/objects/0f275bc1547d01fa5f56ba34bdc87d981ee12daf/client.jar")!
-                        let (tmp, _) = try await URLSession.shared.download(from: remote)
-                        try? FileManager.default.removeItem(at: jarURL)
-                        try FileManager.default.moveItem(at: tmp, to: jarURL)
-                    }
-
-                    if FileManager.default.fileExists(atPath: extracted.path) {
-                        try? FileManager.default.removeItem(at: extracted)
-                    }
-                    try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
-                    try FileManager.default.unzipItem(at: jarURL, to: extracted)
-                    sourceFolder = extracted
-
-                    // Giữ assets đã giải nén làm cache vĩnh viễn; jar chỉ là file trung gian.
-                    try? FileManager.default.removeItem(at: jarURL)
-                }
-
-                return MCResourcePackStore.buildIndexDetached(sourceFolder)
-            }.value
-
-            vanillaFiles = index
-            vanillaReady = !index.isEmpty
-            imageCache.removeAll()
-            itemImageCache.removeAll()
-            modelTextureCache.removeAll()
+            if FileManager.default.fileExists(atPath: base.appendingPathComponent("assets/minecraft/models/item").path) {
+                loadVanillaIndex(base)
+                return
+            }
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let jarURL = base.appendingPathComponent("1.12.2.jar")
+            let remote = URL(string: "https://launcher.mojang.com/v1/objects/0f275bc1547d01fa5f56ba34bdc87d981ee12daf/client.jar")!
+            let (tmp, _) = try await URLSession.shared.download(from: remote)
+            try? FileManager.default.removeItem(at: jarURL)
+            try FileManager.default.moveItem(at: tmp, to: jarURL)
+            let extracted = base.appendingPathComponent("extracted", isDirectory: true)
+            if FileManager.default.fileExists(atPath: extracted.path) { try? FileManager.default.removeItem(at: extracted) }
+            try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
+            try FileManager.default.unzipItem(at: jarURL, to: extracted)
+            loadVanillaIndex(extracted)
         } catch {
-            // Không crash app nếu mạng bị chặn; server pack vẫn có thể hiển thị.
+            // Không làm app crash nếu mạng bị chặn; server pack vẫn có thể hoạt động.
+            return
         }
-        vanillaLoading = false
     }
+
 
     private func normalizedItemDamage(itemId: Int16, damage: Int16) -> Double {
         guard damage > 0 else { return 0 }
@@ -325,7 +240,7 @@ final class MCResourcePackStore: ObservableObject {
         return min(1, max(0, Double(damage) / Double(maxDamage)))
     }
 
-    nonisolated static func buildIndexDetached(_ folder: URL) -> [String: URL] {
+    private func buildIndex(_ folder: URL) -> [String: URL] {
         var index: [String: URL] = [:]
         if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
             for case let url as URL in enumerator {
@@ -345,14 +260,9 @@ final class MCResourcePackStore: ObservableObject {
         return suffixIndex
     }
 
-    private func buildIndex(_ folder: URL) -> [String: URL] {
-        Self.buildIndexDetached(folder)
-    }
-
     private func loadExtractedPack(_ folder: URL, displayName: String) {
         files = buildIndex(folder)
         imageCache.removeAll()
-        itemImageCache.removeAll()
         modelTextureCache.removeAll()
         activePackURL = folder
         activePackName = displayName
@@ -363,7 +273,6 @@ final class MCResourcePackStore: ObservableObject {
         vanillaFiles = buildIndex(folder)
         vanillaReady = !vanillaFiles.isEmpty
         imageCache.removeAll()
-        itemImageCache.removeAll()
         modelTextureCache.removeAll()
     }
 

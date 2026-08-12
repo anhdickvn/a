@@ -34,15 +34,13 @@ final class MCThemeStore: ObservableObject {
     }
 }
 
-// MARK: - Logs: gom toàn bộ chat theo ngày
+// MARK: - Logs hôm nay
 
 struct MCArchivedLog: Identifiable, Codable, Equatable {
     var id = UUID()
     var date: Date
     var text: String
     var segments: [MCChatSegment]? = nil
-    // Optional để tương thích dữ liệu Logs cũ đã lưu từ các bản trước.
-    var serverLabel: String? = nil
 }
 
 @MainActor
@@ -54,25 +52,28 @@ final class MCChatHistoryStore: ObservableObject {
 
     init() { loadAndPrune() }
 
-    /// Chỉ lưu chat thực sự từ server. Debug/reconnect/packet errors không vào Logs.
-    func append(_ entry: MCLogEntry, serverLabel: String? = nil) {
+    /// Chỉ lưu tin nhắn CHAT thực sự nhận từ server.
+    /// Không lưu info/debug/error/system, để Logs chỉ là lịch sử chat của server.
+    func append(_ entry: MCLogEntry) {
         guard entry.kind == .chat else { return }
-        pruneIfNeeded()
 
+        pruneIfNeeded()
         let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        if entries.last?.text == text,
-           Date().timeIntervalSince(entries.last?.date ?? .distantPast) < 1 {
+        // Không ghi lại cùng một dòng liên tiếp do reconnect/callback trùng.
+        if entries.last?.text == text &&
+            Date().timeIntervalSince(entries.last?.date ?? .distantPast) < 1 {
             return
         }
 
-        entries.append(MCArchivedLog(
-            date: entry.timestamp,
-            text: text,
-            segments: entry.segments,
-            serverLabel: serverLabel
-        ))
+        entries.append(
+            MCArchivedLog(
+                date: entry.timestamp,
+                text: text,
+                segments: entry.segments
+            )
+        )
     }
 
     func clearToday() { entries.removeAll() }
@@ -102,138 +103,54 @@ final class MCChatHistoryStore: ObservableObject {
 struct MCLogsView: View {
     @EnvironmentObject var history: MCChatHistoryStore
 
-    private var dayEntries: [MCArchivedLog] {
-        history.entries.sorted { $0.date < $1.date }
-    }
-
     var body: some View {
         NavigationStack {
             Group {
-                if dayEntries.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "archivebox.fill")
-                            .font(.system(size: 42))
-                            .foregroundStyle(.secondary)
-                        Text("Chưa có Logs hôm nay")
-                            .font(.headline)
-                        Text("Tất cả chat trong cùng một ngày sẽ được gom vào một Logs.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if history.entries.isEmpty {
+                    VStack(spacing: 8) { Image(systemName: "text.bubble").font(.largeTitle); Text("Chưa có lịch sử").font(.headline); Text("Chat trong hôm nay sẽ được lưu tại đây.").font(.footnote).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        Section {
-                            NavigationLink {
-                                MCLogDayDetailView(entries: dayEntries)
-                            } label: {
-                                HStack(spacing: 16) {
-                                    Image(systemName: "archivebox.fill")
-                                        .font(.system(size: 38))
-                                        .frame(width: 66, height: 66)
-                                        .foregroundStyle(.white)
-                                        .background(Color.gray.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text("Chat hôm nay")
-                                            .font(.headline)
-                                        Text(Date(), style: .date)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                        Text("\(dayEntries.count) tin nhắn")
-                                            .font(.caption)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                ForEach(history.entries) { entry in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        if let segments = entry.segments, !segments.isEmpty {
+                                            coloredArchivedText(segments)
+                                                .textSelection(.enabled)
+                                        } else {
+                                            Text(entry.text)
+                                                .textSelection(.enabled)
+                                        }
+                                        Text(entry.date, style: .time)
+                                            .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
-                                    Spacer()
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal)
+                                    .id(entry.id)
+                                    Divider()
                                 }
-                                .padding(.vertical, 8)
                             }
+                            .padding(.top, 8)
                         }
                     }
-                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Logs")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    EditButton().disabled(history.entries.isEmpty)
-                }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(role: .destructive) { history.clearToday() } label: {
-                        Image(systemName: "trash")
-                    }
-                    .disabled(history.entries.isEmpty)
+                    Button("Xoá hôm nay", role: .destructive) { history.clearToday() }
+                        .disabled(history.entries.isEmpty)
                 }
             }
         }
-    }
-}
-
-struct MCLogDayDetailView: View {
-    let entries: [MCArchivedLog]
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        Text(entries.first.map { DateFormatter.mcFullDate.string(from: $0.date) } ?? "Hôm nay")
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 16)
-                            .padding(.bottom, 8)
-
-                        ForEach(entries) { entry in
-                            VStack(alignment: .leading, spacing: 4) {
-                                if let segments = entry.segments, !segments.isEmpty {
-                                    archivedColoredText(segments)
-                                        .textSelection(.enabled)
-                                } else {
-                                    Text(entry.text)
-                                        .foregroundStyle(.white)
-                                        .textSelection(.enabled)
-                                }
-                                HStack(spacing: 6) {
-                                    Text(entry.date, style: .time)
-                                    if let server = entry.serverLabel, !server.isEmpty {
-                                        Text("•")
-                                        Text(server)
-                                    }
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .id(entry.id)
-                            Divider().overlay(Color.white.opacity(0.08))
-                        }
-                    }
-                    .padding(.bottom, 24)
-                }
-                .onAppear {
-                    if let last = entries.last {
-                        DispatchQueue.main.async { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
-                }
-            }
-        }
-        .navigationTitle("Chat Logs")
-        .navigationBarTitleDisplayMode(.inline)
-        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder
-    private func archivedColoredText(_ segments: [MCChatSegment]) -> Text {
+    private func coloredArchivedText(_ segments: [MCChatSegment]) -> Text {
         segments.reduce(Text("")) { partial, segment in
             var part = Text(segment.text)
-                .foregroundColor(segment.colorHex.flatMap(Color.init(hex:)) ?? .white)
+                .foregroundColor(segment.colorHex.flatMap(Color.init(hex:)) ?? .primary)
             if segment.bold { part = part.bold() }
             if segment.italic { part = part.italic() }
             if segment.underline { part = part.underline() }
@@ -241,15 +158,6 @@ struct MCLogDayDetailView: View {
             return partial + part
         }
     }
-}
-
-private extension DateFormatter {
-    static let mcFullDate: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .full
-        formatter.timeStyle = .none
-        return formatter
-    }()
 }
 
 struct MCSettingsView: View {
@@ -271,6 +179,27 @@ struct MCSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+}
+
+// MARK: - In-App purchases placeholder (ChatCraft-style tab)
+
+struct MCInAppPurchasesView: View {
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 14) {
+                Image(systemName: "bag.fill")
+                    .font(.system(size: 46))
+                    .foregroundStyle(.secondary)
+                Text("In-App purchases")
+                    .font(.title3.weight(.semibold))
+                Text("Chưa có sản phẩm để mua.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("In-App purchases")
         }
     }
 }

@@ -30,15 +30,17 @@ struct MCChatView: View {
     @State private var showInventory = false
     @State private var tooltipItem: MCItemSlot?
     @State private var tooltipWindowItem: MCOpenWindowItem?
-    @State private var sentMessages: [String] = []
-    @State private var historyCursor: Int?
 
     private var account: MCAccount? { accountStore.account(for: profile.accountId) }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            mainContent
+            if showControls {
+                controlsView
+            } else {
+                chatView
+            }
         }
         .preferredColorScheme(.dark)
         .navigationTitle("")
@@ -55,44 +57,26 @@ struct MCChatView: View {
                 }
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button {
-                    showControls.toggle()
-                    if showControls { showPlayers = false; showStatus = false; showInventory = false }
-                } label: {
+                Button { showControls.toggle() } label: {
                     Image(systemName: showControls ? "message.fill" : "gamecontroller.fill")
                 }
-                .accessibilityLabel("WASD và Jump")
-
-                Button {
-                    showPlayers.toggle()
-                    if showPlayers { showControls = false; showStatus = false; showInventory = false }
-                } label: {
+                Button { showPlayers = true } label: {
                     Image(systemName: "person.3.fill")
                 }
                 .disabled(client.state != .connected)
-                .accessibilityLabel("Player list")
-
-                Button {
-                    showStatus.toggle()
-                    if showStatus { showControls = false; showPlayers = false; showInventory = false }
-                } label: {
+                Button { showStatus = true } label: {
                     Image(systemName: "cross.case.fill")
                 }
                 .disabled(client.state != .connected)
-                .accessibilityLabel("Máu, thức ăn và Respawn")
-
-                Button {
-                    showInventory.toggle()
-                    if showInventory { showControls = false; showPlayers = false; showStatus = false }
-                } label: {
+                Button { showInventory = true } label: {
                     Image(systemName: "briefcase.fill")
                 }
                 .disabled(client.state != .connected)
-                .accessibilityLabel("Hotbar, Inventory và GUI server")
             }
         }
-        // Display Lore là view phụ đúng kiểu ChatCraft: chỉ tên + icon + lore,
-        // tuyệt đối không có nút Left/Right click ở dưới.
+        .sheet(isPresented: $showPlayers) { playerListSheet }
+        .sheet(isPresented: $showStatus) { statusSheet }
+        .sheet(isPresented: $showInventory) { inventorySheet }
         .sheet(item: $tooltipItem) { item in
             itemTooltipSheet(name: item.plainName, segments: item.nameSegments, lore: item.loreSegments,
                              image: resourcePack.image(for: item))
@@ -112,28 +96,10 @@ struct MCChatView: View {
                 client.appendUserInfo("Chưa chọn Minecraft username cho server này.")
                 return
             }
-            // MCClient là singleton nên khi quay lại từ nút <, chat/player/inventory
-            // và socket cũ vẫn còn nguyên. Không tạo kết nối thứ hai nếu phiên vẫn sống.
             guard !client.isConnectedTo(host: profile.host, port: profile.port, username: account.username) else { return }
             client.connect(host: profile.host, port: profile.port, username: account.username)
         }
-        // Chỉ khởi động tác vụ cache; tuyệt đối không await trước khi connect.
-        .task(priority: .utility) { await resourcePack.ensureVanillaAssets() }
-    }
-
-    @ViewBuilder
-    private var mainContent: some View {
-        if showControls {
-            controlsView
-        } else if showPlayers {
-            playerListView
-        } else if showStatus {
-            statusView
-        } else if showInventory {
-            inventoryView
-        } else {
-            chatView
-        }
+        .task { await resourcePack.ensureVanillaAssets() }
     }
 
     private var chatView: some View {
@@ -152,21 +118,16 @@ struct MCChatView: View {
                 .background(Color.black)
                 .onChange(of: client.log.count) { _ in
                     if let last = client.log.last {
-                        if last.kind == .chat {
-                            historyStore.append(last, serverLabel: "\(profile.host):\(profile.port)")
-                        }
+                        if last.kind == .chat { historyStore.append(last) }
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
-                .onAppear {
-                    // Re-entry từ < luôn kéo tới dòng chat mới nhất đang tồn tại,
-                    // không bắt người dùng kéo lại từ đầu.
-                    if let last = client.log.last {
-                        DispatchQueue.main.async { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
-                }
+            }
+
+            if let window = client.currentWindow {
+                serverWindowOverlay(window)
             }
 
             if !client.tabCompletions.isEmpty && input.hasPrefix("/") {
@@ -196,82 +157,111 @@ struct MCChatView: View {
     }
 
     private var chatInputBar: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 14) {
-                Button { showPreviousMessage() } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.blue)
-                        .frame(width: 32, height: 24)
-                }
-                .disabled(sentMessages.isEmpty)
+        HStack(spacing: 8) {
+            Button("TAB") { completeTab() }
+                .font(.headline)
+                .foregroundStyle(.blue)
+                .frame(width: 48)
 
-                Button { showNextMessage() } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.blue)
-                        .frame(width: 32, height: 24)
-                }
-                .disabled(sentMessages.isEmpty)
-            }
+            MCTabTextField(text: $input, isFocused: $inputFocused, placeholder: "Message...",
+                           onSubmit: sendMessage, onTab: completeTab, movementEnabled: false,
+                           onMoveKey: { _ in })
+                .frame(height: 48)
+                .disabled(client.state != .connected)
 
-            HStack(spacing: 8) {
-                Button("TAB") { completeTab() }
-                    .font(.headline)
+            Button { sendMessage() } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.title2)
                     .foregroundStyle(.blue)
-                    .frame(width: 48)
-
-                MCTabTextField(text: $input, isFocused: $inputFocused, placeholder: "Message...",
-                               onSubmit: sendMessage, onTab: completeTab, movementEnabled: false,
-                               onMoveKey: { _ in })
-                    .frame(height: 52)
-                    .disabled(client.state != .connected)
-
-                Button { sendMessage() } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.blue)
-                        .frame(width: 42, height: 52)
-                }
-                .disabled(client.state != .connected || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .frame(width: 40, height: 48)
             }
+            .disabled(client.state != .connected || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 8)
-        .padding(.top, 2)
-        .padding(.bottom, 6)
+        .padding(.vertical, 7)
         .background(Color.black)
     }
 
-    // MARK: - WASD + Jump
-
-    private var controlsView: some View {
-        VStack(spacing: 22) {
-            HStack {
-                Text("WASD + JUMP")
-                    .font(.headline.weight(.bold))
+    private func serverWindowOverlay(_ window: MCOpenWindow) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "shippingbox.fill")
+                    .foregroundStyle(.blue)
+                Text(window.title.isEmpty ? "GUI" : window.title)
+                    .font(.headline)
                     .foregroundStyle(.white)
+                    .lineLimit(1)
                 Spacer()
-                Text(client.isOnGroundLabel)
+                Text("\(window.items.count) mục")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("Close window") {
+                    client.closeCurrentWindow()
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
 
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(window.items.values.sorted { $0.slot < $1.slot })) { item in
+                        serverWindowRow(item)
+                        Divider().overlay(Color.white.opacity(0.08))
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+        }
+        .background(Color(red: 0.08, green: 0.08, blue: 0.09))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 5)
+    }
+
+    private func serverWindowRow(_ item: MCOpenWindowItem) -> some View {
+        HStack(spacing: 10) {
+            itemIcon(item)
+            if let segments = item.nameSegments, !segments.isEmpty {
+                coloredText(segments).font(.system(size: 17, weight: .medium))
+            } else {
+                Text(item.plainName)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.blue)
+            }
+            Spacer(minLength: 4)
+            Menu {
+                Button("Display lore") { tooltipWindowItem = item }
+                Button("Left click") { client.clickWindowSlot(item.slot, mouseButton: 0) }
+                Button("Right click") { client.clickWindowSlot(item.slot, mouseButton: 1) }
+                Button("Drop all") { client.dropAllFromWindowSlot(item.slot) }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 36, height: 44)
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: 56)
+    }
+
+    private var controlsView: some View {
+        VStack(spacing: 24) {
             Spacer()
-
             HStack(spacing: 26) {
                 movementPad
                 HoldButton(title: "JUMP") { client.jumpPlayer() }
-                    .frame(width: 86, height: 86)
+                    .frame(width: 78, height: 78)
             }
-
-            Text("Chạm và giữ W/A/S/D để di chuyển. JUMP gửi packet nhảy thật.")
+            Text("Chạm và giữ W/A/S/D để di chuyển")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 30)
-
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -279,8 +269,8 @@ struct MCChatView: View {
     }
 
     private var movementPad: some View {
-        let size: CGFloat = 52
-        let gap: CGFloat = 6
+        let size: CGFloat = 48
+        let gap: CGFloat = 5
         return VStack(spacing: gap) {
             HStack(spacing: gap) {
                 Color.clear.frame(width: size, height: size)
@@ -306,124 +296,11 @@ struct MCChatView: View {
         .frame(width: size, height: size)
     }
 
-    // MARK: - Player list — nằm ngay trong màn ChatCraft, không mở sheet GUI riêng
-
-    private var playerListView: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Players")
-                                .font(.title2.weight(.bold))
-                                .foregroundStyle(.white)
-                            Text("Tổng online: \(client.onlinePlayerNames.count)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-
-                    ForEach(client.onlinePlayerNames.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }, id: \.self) { name in
-                        HStack(spacing: 14) {
-                            MCPlayerAvatarView(uuid: client.playerUUIDByName[name], username: name)
-                                .frame(width: 56, height: 56)
-                                .clipShape(RoundedRectangle(cornerRadius: 5))
-
-                            Text(name)
-                                .font(.system(size: 19, weight: .regular))
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 18)
-                        .frame(minHeight: 72)
-                        Divider().overlay(Color.white.opacity(0.08))
-                    }
-
-                    if client.onlinePlayerNames.isEmpty {
-                        VStack(spacing: 10) {
-                            Image(systemName: "person.3.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(.secondary)
-                            Text("Chưa nhận được danh sách người chơi từ server.")
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 70)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Health / food / respawn — cùng màn, không sheet
-
-    private var statusView: some View {
-        VStack(spacing: 16) {
-            Spacer(minLength: 8)
-            Text("Player health")
-                .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(.white)
-
-            HStack(spacing: 7) {
-                ForEach(0..<10, id: \.self) { index in
-                    Image(systemName: index < Int(ceil(client.health / 2)) ? "heart.fill" : "heart")
-                        .font(.system(size: 26))
-                        .foregroundStyle(.red)
-                }
-            }
-
-            HStack(spacing: 9) {
-                ForEach(0..<10, id: \.self) { index in
-                    Text(index < Int(ceil(Double(client.food) / 2.0)) ? "🍗" : "·")
-                        .font(.system(size: 24))
-                        .opacity(index < Int(ceil(Double(client.food) / 2.0)) ? 1 : 0.25)
-                }
-            }
-
-            Text(String(format: "%.1f / 20 HP", client.health))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text("Thức ăn: \(client.food) / 20")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Button { client.respawn() } label: {
-                Text("Respawn")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 14)
-                    .background(Color.white.opacity(0.12), in: Rectangle())
-            }
-            .disabled(client.health > 0)
-            .opacity(client.health > 0 ? 0.45 : 1)
-
-            if client.health > 0 {
-                Text("Respawn chỉ bật khi nhân vật đã chết.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
-    }
-
-    // MARK: - Backpack / hotbar / inventory / server GUI
-
-    private var inventoryView: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            ScrollView {
-                if let window = client.currentWindow {
-                    serverGUIContent(window)
-                } else {
+    private var inventorySheet: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                ScrollView {
                     VStack(spacing: 12) {
                         inventorySection("HOTBAR", slots: 36...44)
                         inventorySection("INVENTORY", slots: 9...35)
@@ -432,70 +309,19 @@ struct MCChatView: View {
                     .padding(12)
                 }
             }
-        }
-    }
-
-    private func serverGUIContent(_ window: MCOpenWindow) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "shippingbox.fill")
-                    .foregroundStyle(.blue)
-                Text(window.title.isEmpty ? "GUI" : window.title)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Spacer()
-                Text("\(window.items.count) mục")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            LazyVStack(spacing: 0) {
-                ForEach(Array(window.items.values.sorted { $0.slot < $1.slot })) { item in
-                    serverWindowRow(item)
-                    Divider().overlay(Color.white.opacity(0.08))
+            .navigationTitle("Inventory")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Đóng") { showInventory = false }
                 }
             }
         }
-        .background(Color(red: 0.08, green: 0.08, blue: 0.09), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08)))
-        .padding(12)
-    }
-
-    private func serverWindowRow(_ item: MCOpenWindowItem) -> some View {
-        HStack(spacing: 10) {
-            itemIcon(item)
-            if let segments = item.nameSegments, !segments.isEmpty {
-                coloredText(segments).font(.system(size: 17, weight: .medium))
-            } else {
-                Text(item.plainName)
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.blue)
-            }
-            Spacer(minLength: 4)
-            Button { tooltipWindowItem = item } label: {
-                Image(systemName: "ellipsis")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.blue)
-                    .frame(width: 36, height: 44)
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(minHeight: 58)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // Chạm trực tiếp vào dòng GUI = left click Minecraft thật.
-            client.clickWindowSlot(item.slot, mouseButton: 0)
-        }
+        .preferredColorScheme(.dark)
     }
 
     private func inventorySection(_ title: String, slots: ClosedRange<Int>) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             LazyVStack(spacing: 0) {
                 ForEach(Array(slots), id: \.self) { slot in
                     if let item = client.playerInventory[slot] {
@@ -538,9 +364,6 @@ struct MCChatView: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
                 .frame(width: 48, height: 48)
-                .overlay {
-                    if !resourcePack.vanillaReady { ProgressView().tint(.white) }
-                }
         }
     }
 
@@ -556,9 +379,6 @@ struct MCChatView: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
                 .frame(width: 48, height: 48)
-                .overlay {
-                    if !resourcePack.vanillaReady { ProgressView().tint(.white) }
-                }
         }
     }
 
@@ -577,21 +397,26 @@ struct MCChatView: View {
                         if let segments, !segments.isEmpty {
                             coloredText(segments).font(.headline)
                         } else {
-                            Text(name).font(.headline).foregroundStyle(.white)
+                            Text(name).font(.headline).foregroundStyle(.black)
                         }
                     }
                     if lore.isEmpty {
                         Text("Không có Lore").foregroundStyle(.secondary)
                     } else {
                         ForEach(Array(lore.enumerated()), id: \.offset) { _, line in
-                            coloredText(line)
+                            coloredText(line).foregroundStyle(.black)
+                        }
+                    }
+                    if let windowAction {
+                        HStack {
+                            Button("Left click") { windowAction(0) }.buttonStyle(.borderedProminent)
+                            Button("Right click") { windowAction(1) }.buttonStyle(.bordered)
                         }
                     }
                 }
                 .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color.black.ignoresSafeArea())
+            .background(Color.white.ignoresSafeArea())
             .navigationTitle("Display lore")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -600,8 +425,58 @@ struct MCChatView: View {
                 }
             }
         }
+        .preferredColorScheme(.light)
+    }
+
+    private var statusSheet: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("Máu").font(.headline)
+                HStack(spacing: 4) {
+                    ForEach(0..<10, id: \.self) { i in
+                        Image(systemName: i < Int(ceil(client.health / 2)) ? "heart.fill" : "heart")
+                            .foregroundStyle(.red)
+                    }
+                }
+                Text(String(format: "%.1f / 20 HP", client.health)).foregroundStyle(.secondary)
+                Text("Thức ăn").font(.headline)
+                Text("\(client.food) / 20").foregroundStyle(.secondary)
+                Button { client.respawn() } label: {
+                    Label("Respawn", systemImage: "arrow.clockwise.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(client.health > 0)
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Sinh tồn")
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Đóng") { showStatus = false } } }
+        }
         .preferredColorScheme(.dark)
     }
+
+    private var playerListSheet: some View {
+        NavigationStack {
+            List {
+                Section("Online · \(client.onlinePlayerNames.count)") {
+                    ForEach(client.onlinePlayerNames.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }, id: \.self) { name in
+                        HStack {
+                            Image(systemName: "person.fill").foregroundStyle(.blue)
+                            Text(name).textSelection(.enabled)
+                        }
+                    }
+                    if client.onlinePlayerNames.isEmpty {
+                        Text("Chưa nhận được danh sách người chơi từ server.").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Người chơi")
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Đóng") { showPlayers = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
     private func completeTab() {
         guard client.state == .connected else { return }
         if let completed = client.completeWithNextPlayerName(input) {
@@ -622,33 +497,7 @@ struct MCChatView: View {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         client.sendChat(text)
-        if sentMessages.last != text {
-            sentMessages.append(text)
-            if sentMessages.count > 100 { sentMessages.removeFirst(sentMessages.count - 100) }
-        }
-        historyCursor = nil
         input = ""
-    }
-
-    private func showPreviousMessage() {
-        guard !sentMessages.isEmpty else { return }
-        let next = max((historyCursor ?? sentMessages.count) - 1, 0)
-        historyCursor = next
-        input = sentMessages[next]
-        inputFocused = true
-    }
-
-    private func showNextMessage() {
-        guard !sentMessages.isEmpty else { return }
-        guard let cursor = historyCursor else { return }
-        if cursor + 1 < sentMessages.count {
-            historyCursor = cursor + 1
-            input = sentMessages[cursor + 1]
-        } else {
-            historyCursor = nil
-            input = ""
-        }
-        inputFocused = true
     }
 
     @ViewBuilder
@@ -675,51 +524,6 @@ struct MCChatView: View {
     }
 }
 
-private struct MCPlayerAvatarView: View {
-    let uuid: String?
-    let username: String
-    @State private var image: UIImage?
-
-    var body: some View {
-        ZStack {
-            Color.white.opacity(0.08)
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFill()
-            } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .task(id: uuid ?? username) {
-            let identifier = uuid ?? username
-            let safeName = identifier.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
-            let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("MCPlayerAvatars", isDirectory: true)
-            if let base {
-                try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-                let cached = base.appendingPathComponent(safeName + ".png")
-                if let data = try? Data(contentsOf: cached), let decoded = UIImage(data: data) {
-                    image = decoded
-                    return
-                }
-
-                guard let encoded = identifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                      let url = URL(string: "https://mc-heads.net/avatar/\(encoded)/64") else { return }
-                do {
-                    let (data, _) = try await URLSession.shared.data(from: url)
-                    guard let decoded = UIImage(data: data) else { return }
-                    try? data.write(to: cached, options: .atomic)
-                    image = decoded
-                } catch { }
-            }
-        }
-    }
-}
-
 private struct HoldButton: View {
     let title: String
     let action: () -> Void
@@ -737,20 +541,29 @@ private struct HoldButton: View {
             .background(isHolding ? Color.blue.opacity(0.55) : Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.18)))
             .contentShape(Rectangle())
-            .gesture(
+            .onTapGesture {
+                action()
+            }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.12)
+                    .onEnded { _ in
+                        beginHolding()
+                    }
+            )
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in beginHoldingOrTap() }
-                    .onEnded { _ in endHolding() }
+                    .onChanged { _ in
+                        if !isHolding && onHold != nil { beginHolding() }
+                    }
+                    .onEnded { _ in
+                        endHolding()
+                    }
             )
             .onDisappear { endHolding() }
     }
 
-    private func beginHoldingOrTap() {
-        guard !isHolding else { return }
-        if onHold == nil {
-            action()
-            return
-        }
+    private func beginHolding() {
+        guard !isHolding, onHold != nil else { return }
         isHolding = true
         onHold?()
         repeatTask?.cancel()

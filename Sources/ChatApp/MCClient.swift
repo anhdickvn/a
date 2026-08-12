@@ -19,8 +19,6 @@ final class MCClient: ObservableObject {
     @Published var state: MCConnectionState = .disconnected
     @Published var log: [MCLogEntry] = []
     @Published var onlinePlayerNames: Set<String> = []
-    /// UUID của người chơi theo username, dùng để tải head/skin giống ChatCraft.
-    @Published private(set) var playerUUIDByName: [String: String] = [:]
     /// Kết quả / danh sách gợi ý khi nhấn Tab trong chat (vd /w WhatDid -> WhatDidYouDo).
     @Published var tabCompletions: [String] = []
 
@@ -58,7 +56,6 @@ final class MCClient: ObservableObject {
     private var compressionFailureCount = 0
     private var lastCompressionFailureAt: TimeInterval = 0
     private var connectAttemptToken = UUID()
-    private var drainScheduled = false
 
     private var host: String = ""
     private var port: UInt16 = 25565
@@ -188,18 +185,13 @@ final class MCClient: ObservableObject {
         resourcePackPending = false
         resourcePackCompletionWaiters.removeAll()
         connectAttemptToken = UUID() // vô hiệu hoá mọi callback đang chờ (probe/timeout) của lần kết nối trước
-        drainScheduled = false
-        buffer.reset()
         connection?.cancel()
         connection = nil
-        drainScheduled = false
-        buffer.reset()
         compressionThreshold = -1
         compressionFailureCount = 0
         lastCompressionFailureAt = 0
         onlinePlayerNames.removeAll()
         playerNamesByUUID.removeAll()
-        playerUUIDByName.removeAll()
         tabCompletions.removeAll()
         tabCompletionPrefix = ""
         hotbar = Array(repeating: nil, count: 9)
@@ -319,6 +311,7 @@ final class MCClient: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak self] in
             guard let self, self.connectAttemptToken == token else { return }
             if self.state == .connecting || self.state == .loggingIn {
+                self.appendLog(.error, "Server chưa phản hồi login, đang giữ phiên và tự thử lại.")
                 if self.shouldStayConnected {
                     self.scheduleReconnect(reason: "login timeout")
                 } else {
@@ -334,8 +327,9 @@ final class MCClient: ObservableObject {
         case .ready:
             startHandshakeAndLogin()
         case .failed(let error):
+            appendLog(.error, "Lỗi kết nối: \(error.localizedDescription) [NWError]")
             if shouldStayConnected {
-                scheduleReconnect(reason: "socket")
+                scheduleReconnect(reason: "kết nối TCP thất bại")
             } else {
                 state = .failed(error.localizedDescription)
             }
@@ -374,8 +368,8 @@ final class MCClient: ObservableObject {
             guard let error else { return }
             Task { @MainActor in
                 guard let self else { return }
-                // Lỗi socket là trạng thái nội bộ, không đẩy dòng debug vào chat.
-                if self.shouldStayConnected { self.scheduleReconnect(reason: "socket") }
+                self.appendLog(.error, "Gửi packet thất bại: \(error.localizedDescription)\(self.networkErrorHint(error))")
+                if self.shouldStayConnected { self.scheduleReconnect(reason: "send packet lỗi") }
             }
         })
     }
@@ -444,6 +438,7 @@ final class MCClient: ObservableObject {
                     self.drainPackets()
                 }
                 if let error {
+                    self.appendLog(.error, "Mất kết nối: \(error.localizedDescription)\(self.networkErrorHint(error))")
                     if self.shouldStayConnected {
                         self.scheduleReconnect(reason: "mất socket")
                     } else {
@@ -467,21 +462,18 @@ final class MCClient: ObservableObject {
         }
     }
 
-    private func drainPackets(maxPackets: Int = 8) {
+    private func drainPackets(maxPackets: Int = 24) {
         var processed = 0
         while processed < maxPackets, let raw = buffer.nextRawPacket() {
             processed += 1
             handleRawPacket(raw)
         }
 
-        // Player-list/world packets có thể dồn thành hàng trăm packet ngay sau login.
-        // Không chạy vòng lặp vô hạn trên MainActor: nhường một nhịp cho SwiftUI để
-        // app vẫn nhận touch, scroll và bàn phím ngay lập tức.
-        if processed == maxPackets, buffer.remainingCount > 0, !drainScheduled {
-            drainScheduled = true
-            DispatchQueue.main.async { [weak self] in
+        // Không xử lý hàng nghìn packet liên tiếp trên MainActor. Nhường run-loop
+        // để SwiftUI còn nhận touch/scroll, sau đó xử lý tiếp phần còn lại.
+        if processed == maxPackets, buffer.remainingCount > 0 {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.drainScheduled = false
                 self.drainPackets(maxPackets: maxPackets)
             }
         }
@@ -511,11 +503,17 @@ final class MCClient: ObservableObject {
                 guard expected > 0 else { return }
                 guard let inflated = zlibInflate(rest, expectedSize: expected) else {
                     compressionFailureCount += 1
-                    // Không đưa lỗi decoder/nén vào chat. Quan trọng nhất là không
-                    // parse phần compressed như packet thường vì sẽ làm lệch TCP stream.
+                    let now = Date().timeIntervalSince1970
+                    // Không spam UI hàng trăm dòng khi server/proxy gửi packet
+                    // mà client chưa hiểu; chỉ báo tối đa 1 lần / 2 giây.
+                    if now - lastCompressionFailureAt >= 2.0 {
+                        lastCompressionFailureAt = now
+                        appendLog(.error, "Packet nén không hợp lệ (dataLength=\(expected), compressed=\(rest.count)).")
+                    }
+                    // Tuyệt đối không parse `rest` như packet chưa nén.
                     return
                 }
-                guard inflated.count > 0, inflated.count <= 8 * 1024 * 1024 else { return }
+                guard inflated.count == expected else { return }
                 payload = inflated
             }
         }
@@ -609,12 +607,11 @@ final class MCClient: ObservableObject {
 
         case 0x0F: // Chat Message (clientbound)
             guard let (json, next) = body.readMCString(from: 0) else { return }
+            let position = next < body.count ? body[body.startIndex + next] : 0
             let segments = chatSegments(from: json)
             let text = segments.map(\.text).joined()
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            // Giữ nguyên system/chat trên màn hình. Logs chỉ lấy nội dung server gửi
-            // trong kênh chat, không lấy debug/reconnect nội bộ của client.
-            appendLog(.chat, text, segments: segments)
+            appendLog(position == 1 ? .system : .chat, text, segments: segments)
 
         case 0x1A: // Disconnect (play)
             let (reason, _) = body.readMCString(from: 0) ?? ("Bạn đã bị ngắt kết nối.", 0)
@@ -732,8 +729,7 @@ final class MCClient: ObservableObject {
         guard now - movementLastSentAt >= 0.05 else { return }
         let distance = hypot(dx, dz)
         guard distance > 0 else { return }
-        // Vanilla walking speed is roughly 4.3 blocks/s => ~0.215 block/tick at 20Hz.
-        let maxStep = 0.215
+        let maxStep = 0.14
         let scale = min(maxStep / distance, 1.0)
         playerX += dx * scale
         playerZ += dz * scale
@@ -789,18 +785,16 @@ final class MCClient: ObservableObject {
         isOnGround = false
         let startY = playerY
         let startTime = Date().timeIntervalSince1970
-        // Vanilla 1.12 jump: initial vertical velocity 0.42, gravity ~0.08/tick.
-        // Tổng thời gian bay khoảng 10.5 ticks và đỉnh cao khoảng 1.1 block.
-        let tickDuration = 0.05
-        let jumpDuration = 0.525
+        let duration = 0.62
 
         func scheduleNext() {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.state == .connected, self.jumpGeneration == generation else { return }
-                let elapsed = Date().timeIntervalSince1970 - startTime
-                let ticks = min(max(elapsed / tickDuration, 0), jumpDuration / tickDuration)
-                self.playerY = startY + (0.42 * ticks) - (0.5 * 0.08 * ticks * ticks)
-                let landed = elapsed >= jumpDuration
+                let t = Date().timeIntervalSince1970 - startTime
+                let u = min(max(t / duration, 0), 1)
+                // Đường cong chỉ dùng để mô phỏng client khi server chưa gửi correction.
+                self.playerY = startY + (0.42 * 4.0 * u * (1.0 - u))
+                let landed = u >= 1.0
                 self.isOnGround = landed
                 self.movementLastSentAt = Date().timeIntervalSince1970
                 self.sendPlayerPosition(onGround: landed)
@@ -824,10 +818,7 @@ final class MCClient: ObservableObject {
         payload += playerY.mcBigEndianBytes
         payload += playerZ.mcBigEndianBytes
         payload.append(onGround ? 1 : 0)
-        // Protocol 340 / Minecraft 1.12.2: Player Position = 0x0D.
-        // 0x0C là Player (chỉ có onGround), gửi nhầm ID này khiến server bỏ qua
-        // tọa độ và là nguyên nhân WASD/JUMP trước đây không di chuyển.
-        send(packetId: 0x0D, payload: payload)
+        send(packetId: 0x0C, payload: payload)
     }
 
     // MARK: - Player list + Tab completion
@@ -853,16 +844,10 @@ final class MCClient: ObservableObject {
         // Hoàn thành ngay bằng Player List, không cần chờ server phản hồi.
         let token = currentCompletionToken(in: query)
         let prefix = token.lowercased()
-        let command = query.split(separator: " ").first.map(String.init)?.lowercased() ?? ""
-        let playerCommands = ["/w", "/msg", "/tell", "/t", "/r", "/reply", "/whisper", "/m"]
-        if prefix.isEmpty && playerCommands.contains(command) {
-            tabCompletions = onlinePlayerNames.sorted { $0.lowercased() < $1.lowercased() }
-        } else if !prefix.isEmpty {
+        if !prefix.isEmpty {
             tabCompletions = onlinePlayerNames
                 .filter { $0.lowercased().hasPrefix(prefix) }
                 .sorted { $0.lowercased() < $1.lowercased() }
-        } else {
-            tabCompletions = []
         }
     }
 
@@ -936,12 +921,6 @@ final class MCClient: ObservableObject {
         guard let (count, nextCount) = decodeVarInt(from: body, offset: idx) else { return }
         idx = nextCount
 
-        // Chỉ publish một lần cho cả packet. Publish từng username làm SwiftUI
-        // render lại hàng chục/hàng trăm lần ngay lúc mới vào server.
-        var namesChanged = false
-        var pendingNames = onlinePlayerNames
-        var pendingUUIDMap = playerUUIDByName
-
         for _ in 0..<Int(count) {
             guard idx + 16 <= body.count else { return }
             let uuidData = body.subdata(in: idx..<(idx + 16))
@@ -985,9 +964,7 @@ final class MCClient: ObservableObject {
                 }
 
                 playerNamesByUUID[uuid] = name
-                pendingNames.insert(name)
-                pendingUUIDMap[name] = uuid
-                namesChanged = true
+                onlinePlayerNames.insert(name)
 
             case 1: // UPDATE_GAMEMODE
                 guard let (_, next) = decodeVarInt(from: body, offset: idx) else { return }
@@ -1008,21 +985,12 @@ final class MCClient: ObservableObject {
 
             case 4: // REMOVE_PLAYER
                 if let name = playerNamesByUUID.removeValue(forKey: uuid) {
-                    pendingNames.remove(name)
-                    pendingUUIDMap.removeValue(forKey: name)
-                    namesChanged = true
+                    onlinePlayerNames.remove(name)
                 }
 
             default:
                 return
             }
-        }
-
-        if namesChanged {
-            // Chỉ publish một lần cho cả packet. Đây là điểm quan trọng để server
-            // có vài trăm người online không làm SwiftUI render lại vài trăm lần lúc vào.
-            onlinePlayerNames = pendingNames
-            playerUUIDByName = pendingUUIDMap
         }
 
         // Giữ kết quả gợi ý local đồng bộ ngay khi server gửi Player List.
@@ -1122,26 +1090,6 @@ final class MCClient: ObservableObject {
         guard let url = URL(string: urlString) else {
             finishResourcePack(success: false, message: "Địa chỉ texture pack không hợp lệ.")
             return
-        }
-
-        // Nếu pack đã có trong máy theo hash thì dùng ngay, tuyệt đối không tải lại.
-        // Việc này loại bỏ một nguồn lag lớn khi reconnect/vào lại server.
-        if !hash.isEmpty,
-           let dir = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("TexturePacks", isDirectory: true) {
-            let cached = dir.appendingPathComponent(hash + ".zip")
-            if FileManager.default.fileExists(atPath: cached.path) {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    do {
-                        try await MCResourcePackStore.shared.installDownloadedPack(zipURL: cached, name: cached.lastPathComponent)
-                        self.finishResourcePack(success: true, message: "Dùng texture pack đã cache: \(cached.lastPathComponent).")
-                    } catch {
-                        self.finishResourcePack(success: false, message: "Không áp dụng được texture pack đã cache: \(error.localizedDescription)")
-                    }
-                }
-                return
-            }
         }
 
         let task = URLSession.shared.downloadTask(with: url) { [weak self] tempURL, _, error in
@@ -1517,30 +1465,26 @@ private func walkChatComponent(_ obj: Any, style: MCChatStyle) -> [MCChatSegment
 private func zlibInflate(_ data: Data, expectedSize: Int) -> Data? {
     guard expectedSize > 0, !data.isEmpty, expectedSize <= 8 * 1024 * 1024 else { return nil }
 
-    func decode(_ compressed: Data) -> Data? {
+    func decodeRaw(_ compressed: Data) -> Data? {
         guard !compressed.isEmpty else { return nil }
-        // Một số proxy Minecraft báo dataLength hơi lệch 1-2 byte. Không để sai
-        // length làm decoder bỏ luôn TCP stream; cho phép buffer lớn hơn rồi lấy
-        // đúng số byte thực sự giải nén được. Giới hạn 8 MiB để không thể phình RAM.
-        let capacity = min(8 * 1024 * 1024, max(expectedSize, expectedSize * 4 + 1024))
-        var result = Data(count: capacity)
+        var result = Data(count: expectedSize)
         let size: Int = result.withUnsafeMutableBytes { dst in
             compressed.withUnsafeBytes { src in
                 guard let dstPtr = dst.bindMemory(to: UInt8.self).baseAddress,
                       let srcPtr = src.bindMemory(to: UInt8.self).baseAddress else { return -1 }
-                return compression_decode_buffer(dstPtr, capacity, srcPtr, compressed.count, nil, COMPRESSION_ZLIB)
+                return compression_decode_buffer(dstPtr, expectedSize, srcPtr, compressed.count, nil, COMPRESSION_ZLIB)
             }
         }
-        guard size > 0 else { return nil }
-        return Data(result.prefix(size))
+        return size == expectedSize ? result : nil
     }
 
-    // Chuẩn Minecraft là zlib/RFC1950. Một vài proxy cũ từng bọc thêm header;
-    // thử cả hai dạng để tránh lỗi "packet nén không hợp lệ" làm mất phiên.
-    if let inflated = decode(data) { return inflated }
+    // Notchian/legacy Minecraft implementations normally carry raw DEFLATE here.
+    // Một số proxy lại bọc thêm RFC1950 header + Adler32. Thử raw trước, sau đó mới
+    // thử bỏ wrapper để tương thích cả hai mà không làm lệch TCP stream.
+    if let raw = decodeRaw(data) { return raw }
     if data.count > 6 {
         let wrapped = data.dropFirst(2).dropLast(4)
-        if let inflated = decode(Data(wrapped)) { return inflated }
+        if let raw = decodeRaw(Data(wrapped)) { return raw }
     }
     return nil
 }
