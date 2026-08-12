@@ -15,7 +15,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Check source
+    - name: Check files
       run: |
         pwd
         ls -la
@@ -29,15 +29,20 @@ jobs:
       run: |
         xcodegen generate
         ls -la
-        test -d Minecraft.xcodeproj
+        test -d ChatMC.xcodeproj
 
-    - name: Archive
+    - name: Build Archive
       run: |
         xcodebuild archive \
-        -project Minecraft.xcodeproj \
-        -scheme Minecraft \
-        -archivePath build/Minecraft.xcarchive \
+        -project ChatMC.xcodeproj \
+        -scheme ChatMC \
+        -archivePath build/ChatMC.xcarchive \
         -sdk iphoneos \
         -destination generic/platform=iOS \
         CODE_SIGNING_ALLOWED=NO \
         CODE_SIGNING_REQUIRED=NO
+
+    - name: Export files
+      if: success()
+      run: |
+        ls -la build
