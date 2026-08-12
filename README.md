@@ -13,7 +13,7 @@ Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau m
 ## Kiểm tra
 `MCClient.swift` đã được kiểm tra cú pháp bằng `swiftc -parse` trên môi trường build hiện tại.
 
-## v23 WASD/JUMP fix
+## v24 WASD/JUMP fix
 - Touch controls use the existing UIKit touch-down/up path with a larger hit area.
 - WASD sends real protocol-340 Player Position packets every 50 ms while held.
 - Jump now sends the first off-ground position immediately, then continues the jump arc.
