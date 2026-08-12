@@ -1,10 +1,12 @@
-name: ChatMC Build
+name: ChatMC Build IPA
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+
+  workflow_dispatch:
+
 
 jobs:
   build:
@@ -15,14 +17,16 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+
     - name: Install XcodeGen
       run: |
         brew install xcodegen
 
+
     - name: Generate Xcode Project
       run: |
         xcodegen generate
-        xcodebuild -list -project ChatMC.xcodeproj
+
 
     - name: Archive
       run: |
@@ -34,3 +38,43 @@ jobs:
         -destination generic/platform=iOS \
         CODE_SIGNING_ALLOWED=NO \
         CODE_SIGNING_REQUIRED=NO
+
+
+    - name: Create Export Options
+      run: |
+        cat > ExportOptions.plist <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>method</key>
+            <string>development</string>
+
+            <key>signingStyle</key>
+            <string>manual</string>
+
+            <key>compileBitcode</key>
+            <false/>
+
+        </dict>
+        </plist>
+        EOF
+
+
+    - name: Export IPA
+      run: |
+        mkdir -p build/export
+
+        xcodebuild -exportArchive \
+        -archivePath build/ChatMC.xcarchive \
+        -exportPath build/export \
+        -exportOptionsPlist ExportOptions.plist \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO
+
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: ChatMC-IPA
+        path: build/export/*.ipa
