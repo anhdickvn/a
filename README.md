@@ -1,4 +1,4 @@
-# Minecraft-FIXED-UI-v22-SESSION-HEARTBEAT
+# Minecraft-FIXED-UI-v27-PROTOCOL-DIAGNOSTIC
 
 Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau một thời gian, sau đó xuất hiện `This command cannot be executed on this server` hoặc `disconnect.timeout`.
 
@@ -61,26 +61,10 @@ Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau m
   entirely if `with` was also empty), which could hide part of a server's real response.
   Both are now kept.
 
-## v27 zero-rotation anti-bot fix
-- User-reported evidence: `This command cannot be executed on this server` fired at
-  T+64.57s and, on a separate repro with a completely different action (no GUI open,
-  standing still, sent nothing but a chat command), at T+64.59s — i.e. the exact same
-  elapsed time almost to the hundredth of a second, regardless of whether a GUI was open
-  or what the player was doing. Both times `hasServerPosition = true`, the idle heartbeat
-  was firing every ~0.3s, and the last packet received was 0.00s ago — so the connection
-  and the position heartbeat were both completely healthy. Real client (TLauncher /
-  vanilla) never reproduces this doing the same thing.
-- That signature — a fixed ~60s server-side threshold, independent of network health or
-  GUI state — matches a very common anti-bot heuristic: flag any player whose look
-  direction (yaw/pitch) hasn't changed at all over a rolling window, since real players'
-  hand/mouse always introduces tiny continuous rotation even standing still, while a
-  scripted bot's camera is perfectly static.
-- Root cause: this app has **never** sent a serverbound packet containing yaw/pitch.
-  The idle heartbeat only ever sent `0x0D` (Player Position — X/Y/Z, no rotation), and
-  there is no camera/look-around control in the UI at all, so `playerYaw`/`playerPitch`
-  are set once from the server's spawn packet and then frozen forever from the server's
-  point of view — a textbook zero-rotation bot signature.
-- Fix: added `sendIdlePositionAndLook()`, which sends `0x0F` (Player Position And Look)
-  instead of `0x0D` once `hasServerPosition` is true, applying a small smooth sin/cos
-  jitter (~1-1.5°) to yaw/pitch each tick to mimic natural micro-movement — without
-  touching the real `playerYaw`/`playerPitch` state used for WASD movement direction.
+## v27 protocol-only diagnostic
+- Không thay đổi chat scroll, GUI, `/ah`, automation hay movement behaviour; mục tiêu của bản này là bắt đúng nguyên nhân disconnect khi người chơi đứng yên.
+- Thêm ring-buffer 80 packet RX/TX cuối cùng của Play session, gồm timestamp T+x.xx, packet ID, byte count và mô tả KeepAlive / Teleport / movement / Client Settings / Resource Pack.
+- Khi TCP EOF, receive error hoặc server gửi Play Disconnect (0x1A), app tự chụp `⚠️ [PROTOCOL DIAGNOSTIC]` kèm protocol version, packet RX cuối, KeepAlive RX/response, Teleport Confirm, unknown Play packet count và 80 packet cuối.
+- KeepAlive response chỉ được đánh dấu hoàn tất sau khi `NWConnection` báo `contentProcessed`; nếu send 0x0B lỗi, diagnostic sẽ hiện rõ.
+- Các packet Play chưa được xử lý không còn bị bỏ qua im lặng: diagnostic ghi ID + kích thước để phát hiện server/proxy gửi packet mà client thiếu handler.
+- Test chuẩn: vào server, không gõ lệnh/không click/không di chuyển, đứng yên 70–90 giây. Khi disconnect, chụp khối `[PROTOCOL DIAGNOSTIC]` và toàn bộ các dòng `RX/TX` ngay phía dưới.
