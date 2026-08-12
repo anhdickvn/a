@@ -1,10 +1,10 @@
-# Minecraft FIXED UI v19
+# Minecraft FIXED UI v21
 
 ## Root cause fixed: Bungee DecoderException / Unknown zlib header
 
-The previous iOS build used Apple's `COMPRESSION_ZLIB`. Apple's API emits **raw DEFLATE (RFC 1951)**, not an RFC 1950 zlib-wrapped stream. Minecraft/Netty/Bungee compression expects the zlib wrapper. The client therefore could work until the first compressed clientbound/serverbound traffic and then the proxy could report `DecoderException` / `Unknown zlib header`.
+The affected iOS build used Apple's `COMPRESSION_ZLIB`. Apple's API emits **raw DEFLATE (RFC 1951)**, not an RFC 1950 zlib-wrapped stream. Minecraft/Netty/Bungee compression expects the zlib wrapper. The client therefore could work until the first compressed clientbound/serverbound traffic and then the proxy could report `DecoderException` / `Unknown zlib header`.
 
-v19 wraps the raw DEFLATE stream with a valid zlib header and Adler-32 trailer before sending it. Incoming packets continue to accept both raw and wrapped streams.
+v21 explicitly wraps the raw DEFLATE stream with a valid zlib header and Adler-32 trailer before sending it. Incoming packets continue to accept both raw and wrapped streams.
 
 ## Chat
 
