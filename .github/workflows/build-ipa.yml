@@ -13,13 +13,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check files
+        run: |
+          ls -la
+
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          brew install xcodegen
 
-      - name: Generate Xcode Project
-        run: xcodegen generate
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          ls -la
 
-      - name: Archive
+      - name: Build Archive
         run: |
           xcodebuild archive \
           -project Minecraft.xcodeproj \
