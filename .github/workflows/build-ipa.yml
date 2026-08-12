@@ -1,99 +1,52 @@
 name: Build IPA
-
-
 on:
-
   workflow_dispatch:
-
   push:
     branches:
       - main
       - master
-
-
-
 jobs:
-
   build:
-
     runs-on: macos-26
-
-
     steps:
-
-
     - name: Checkout
       uses: actions/checkout@v4
-
-
-
     - name: Install XcodeGen
       run: |
         brew install xcodegen
-
-
-
     - name: Clean old files
       run: |
         rm -rf ChatMC.xcodeproj
         rm -rf build
-
-
-
     - name: Generate Xcode Project
       run: |
         xcodegen generate
-
         echo "===== PROJECT ====="
-
         ls -la
-
         echo "===== TARGETS ====="
-
         xcodebuild \
         -list \
         -project ChatMC.xcodeproj
-
-
-
     - name: Archive
       run: |
-
         xcodebuild archive \
         -project ChatMC.xcodeproj \
-        -target ChatMC \
+        -scheme Minecraft \
         -archivePath build/ChatMC.xcarchive \
         -sdk iphoneos \
         -destination "generic/platform=iOS" \
         CODE_SIGNING_ALLOWED=NO \
         CODE_SIGNING_REQUIRED=NO
-
-
-
     - name: Create IPA
       run: |
-
         mkdir -p build/Payload
-
-
         cp -R \
         build/ChatMC.xcarchive/Products/Applications/ChatMC.app \
         build/Payload/ChatMC.app
-
-
         cd build
-
-
         zip -qry ChatMC-unsigned.ipa Payload
-
-
-
     - name: Upload IPA
-
       uses: actions/upload-artifact@v4
-
       with:
-
         name: ChatMC-IPA
-
         path: build/ChatMC-unsigned.ipa
