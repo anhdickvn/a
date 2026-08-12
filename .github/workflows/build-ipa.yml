@@ -1,66 +1,43 @@
-name: ChatMC Build IPA
+name: Build IPA
 
 on:
-  push:
-    branches:
-      - main
-
   workflow_dispatch:
-
+  push:
+    branches: [ main, master ]
 
 jobs:
   build:
-
-    runs-on: macos-15
-
+    runs-on: macos-26
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-    - name: Install XcodeGen
-      run: |
-        brew install xcodegen
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project Minecraft.xcodeproj \
+            -scheme Minecraft \
+            -archivePath build/Minecraft.xcarchive \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
 
+      - name: Package unsigned app
+        run: |
+          mkdir -p build/Payload
+          cp -R build/Minecraft.xcarchive/Products/Applications/Minecraft.app build/Payload/Minecraft.app
+          cd build
+          zip -qry Minecraft-unsigned.ipa Payload
 
-    - name: Generate Xcode Project
-      run: |
-        xcodegen generate
-        ls -la ChatMC.xcodeproj
-
-
-    - name: Archive
-      run: |
-        xcodebuild archive \
-        -project ChatMC.xcodeproj \
-        -scheme ChatMC \
-        -archivePath build/ChatMC.xcarchive \
-        -sdk iphoneos \
-        -destination generic/platform=iOS \
-        CODE_SIGNING_ALLOWED=NO \
-        CODE_SIGNING_REQUIRED=NO
-
-
-    - name: Create Unsigned IPA
-      run: |
-        mkdir -p build/Payload
-
-        cp -R \
-        build/ChatMC.xcodearchive/Products/Applications/ChatMC.app \
-        build/Payload/ || \
-        cp -R \
-        build/ChatMC.xcarchive/Products/Applications/ChatMC.app \
-        build/Payload/
-
-
-        cd build
-
-        zip -r ChatMC-unsigned.ipa Payload
-
-
-    - name: Upload IPA
-      uses: actions/upload-artifact@v4
-      with:
-        name: ChatMC-IPA
-        path: build/ChatMC-unsigned.ipa
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-unsigned-ipa
+          path: build/Minecraft-unsigned.ipa
