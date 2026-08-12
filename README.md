@@ -1,13 +1,31 @@
-# Minecraft-FIXED-UI-v16
+# Minecraft FIXED UI v19
 
-Based on v15.
+## Root cause fixed: Bungee DecoderException / Unknown zlib header
 
-Changes in v16:
-- Chat components now preserve Minecraft `clickEvent.action=open_url`, including links attached to text such as Đăng nhập, Đăng ký, and Đổi mật khẩu. Links are blue, underlined, and open through iOS after the existing chat click-action confirmation.
-- Raw URLs remain auto-detected and underlined.
-- Client Settings + `MC|Brand` are sent after Join Game instead of immediately at Login Success, matching the Play-state lifecycle more closely.
-- Idle movement heartbeat uses the protocol-340 Player packet at 20Hz when stationary, matching the normal vanilla C03 player tick behavior more closely.
-- Server-issued Play Disconnect is no longer immediately auto-reconnected; this prevents kick/reconnect loops such as a proxy repeatedly returning `This command cannot be executed on this server`. The exact server disconnect reason remains visible in the connection notice/log.
-- WASD/JUMP touch buttons use direct UIKit touch-down/up handling with larger hit targets and exclusive touch handling.
+The previous iOS build used Apple's `COMPRESSION_ZLIB`. Apple's API emits **raw DEFLATE (RFC 1951)**, not an RFC 1950 zlib-wrapped stream. Minecraft/Netty/Bungee compression expects the zlib wrapper. The client therefore could work until the first compressed clientbound/serverbound traffic and then the proxy could report `DecoderException` / `Unknown zlib header`.
 
-Important: this does not spoof another launcher/client identity or bypass a server's anti-bot/anti-cheat/session checks. It only makes the protocol lifecycle more standards-compliant and exposes the server's actual disconnect reason.
+v19 wraps the raw DEFLATE stream with a valid zlib header and Adler-32 trailer before sending it. Incoming packets continue to accept both raw and wrapped streams.
+
+## Chat
+
+- Normal, non-inverted ScrollView.
+- Old messages are above; newest message is at the bottom.
+- Opening the chat starts at the newest message.
+- New messages only auto-scroll when already at the bottom.
+- While reading history, new messages do not move the viewport.
+- Removed all Y-axis scale/inversion from chat rows.
+
+## Account UI
+
+- Account remains horizontally pageable when there are multiple accounts.
+- Compact 72x72 skin icon and username.
+- Server list layout is otherwise preserved.
+
+## Movement
+
+- Touch-held WASD movement ticks at 20 Hz (50 ms), not once per second.
+- Idle heartbeat remains separate at approximately 1 Hz.
+
+## Diagnostics
+
+If the server still disconnects, the chat notice now includes the last outbound packet id/size/compression state, which helps identify the exact packet immediately preceding a proxy disconnect.
