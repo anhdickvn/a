@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MCServerListView: View {
     @StateObject private var store = MCProfileStore()
+    @StateObject private var statusStore = MCServerStatusStore()
     @EnvironmentObject var accountStore: MCAccountStore
     @State private var showAdd = false
     @State private var showAddAccount = false
@@ -169,12 +170,22 @@ struct MCServerListView: View {
                 }
                 Button("Hủy", role: .cancel) { deleteProfile = nil }
             }
-            .onAppear { store.ensureDefaultServer() }
+            .onAppear {
+                store.ensureDefaultServer()
+                statusStore.refreshAll(store.profiles)
+            }
+            .onChange(of: store.profiles.count) { _ in
+                statusStore.refreshAll(store.profiles)
+            }
+            .refreshable {
+                statusStore.refreshAll(store.profiles)
+            }
         }
     }
 
     private func serverRow(_ profile: MCServerProfile) -> some View {
-        HStack(spacing: 12) {
+        let status = statusStore.status(for: profile.id)
+        return HStack(alignment: .top, spacing: 12) {
             Image(systemName: "server.rack")
                 .font(.title2)
                 .frame(width: 42, height: 42)
@@ -182,10 +193,36 @@ struct MCServerListView: View {
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(profile.name).font(.body.weight(.semibold))
+                HStack(alignment: .firstTextBaseline) {
+                    Text(profile.name).font(.body.weight(.semibold))
+                    Spacer()
+                    pingBadge(status)
+                }
                 Text("\(profile.host):\(profile.port)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                // "Tooltip" thông tin server: MOTD + số người chơi online, giống màn chọn
+                // server thật, lấy từ 1 lần Status Ping riêng (statusStore), không đụng gì
+                // tới phiên đăng nhập thật của MCClient.
+                switch status?.phase {
+                case .online:
+                    if let status, !status.motd.isEmpty {
+                        Text(status.motd)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                case .offline(let reason):
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.red.opacity(0.8))
+                case .loading, nil:
+                    Text("Đang lấy thông tin server...")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let account = accountStore.account(for: profile.accountId) {
                     Text("👤 \(account.username)")
                         .font(.caption2)
@@ -199,6 +236,37 @@ struct MCServerListView: View {
             Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
+    }
+
+    /// Badge nhỏ góc phải kiểu "Ping 166   53/6767" trong tooltip server list thật.
+    @ViewBuilder
+    private func pingBadge(_ status: MCServerStatus?) -> some View {
+        switch status?.phase {
+        case .online:
+            if let status {
+                HStack(spacing: 6) {
+                    Text("Ping \(status.pingMs)")
+                    Text("\(status.onlinePlayers)/\(status.maxPlayers)")
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(pingColor(status.pingMs))
+            }
+        case .offline:
+            Text("Offline")
+                .font(.caption2)
+                .foregroundStyle(.red)
+        case .loading, nil:
+            ProgressView()
+                .scaleEffect(0.6)
+        }
+    }
+
+    private func pingColor(_ ms: Int) -> Color {
+        switch ms {
+        case ..<100: return .green
+        case ..<300: return .yellow
+        default: return .red
+        }
     }
 }
 
@@ -232,6 +300,12 @@ struct MCServerEditView: View {
                         }
                     }
                     Text("Bạn có thể sửa IP hoặc username của server hiện tại; app sẽ cập nhật hồ sơ này, không tạo server mới.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    Toggle("Autologin", isOn: $profile.autoLogin)
+                    Text("Bật: vào server này xong app tự gửi \"/login\", chờ rồi tự mở la bàn và chọn item cho bạn. Tắt: chỉ kết nối bình thường, không tự làm gì cả.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

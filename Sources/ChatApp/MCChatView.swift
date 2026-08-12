@@ -97,7 +97,7 @@ struct MCChatView: View {
                 return
             }
             guard !client.isConnectedTo(host: profile.host, port: profile.port, username: account.username) else { return }
-            client.connect(host: profile.host, port: profile.port, username: account.username)
+            client.connect(host: profile.host, port: profile.port, username: account.username, autoLogin: profile.autoLogin)
         }
         .task { await resourcePack.ensureVanillaAssets() }
     }

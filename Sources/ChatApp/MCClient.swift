@@ -60,6 +60,9 @@ final class MCClient: ObservableObject {
     private var host: String = ""
     private var port: UInt16 = 25565
     private var username: String = ""
+    /// Cờ bật/tắt tự động login + mở la bàn (đọc từ MCServerProfile.autoLogin lúc connect()).
+    /// KHÔNG đổi cách automation chạy — chỉ quyết định có chạy hay không.
+    private var autoLoginEnabled = true
     private var windowActionCounter: Int16 = 0
     private var backgroundObservers: [NSObjectProtocol] = []
     /// true sau khi người dùng bấm Kết nối; khi mạng chập chờn/iOS trả POSIX 53,
@@ -134,13 +137,16 @@ final class MCClient: ObservableObject {
     }
 
     /// `username`: lấy từ MCAccount đã chọn cho server này (đăng nhập kiểu offline/cracked).
-    func connect(host: String, port: UInt16, username: String) {
+    /// `autoLogin`: từ MCServerProfile.autoLogin — bật thì vào server xong tự "/login" + tự
+    /// mở la bàn chọn item như cũ; tắt thì chỉ kết nối bình thường, không tự làm gì thêm.
+    func connect(host: String, port: UInt16, username: String, autoLogin: Bool = true) {
         disconnect(silent: true)
         shouldStayConnected = true
         reconnectDelay = 1.5
         self.host = host
         self.port = port
         self.username = username
+        self.autoLoginEnabled = autoLogin
         let token = UUID()
         connectAttemptToken = token
 
@@ -435,7 +441,7 @@ final class MCClient: ObservableObject {
                 guard self.connectAttemptToken == token else { return }
                 if let data, !data.isEmpty {
                     self.buffer.append(data)
-                    self.drainPackets()
+                    await self.drainPackets()
                 }
                 if let error {
                     self.appendLog(.error, "Mất kết nối: \(error.localizedDescription)\(self.networkErrorHint(error))")
@@ -462,25 +468,27 @@ final class MCClient: ObservableObject {
         }
     }
 
-    private func drainPackets(maxPackets: Int = 24) {
+    private func drainPackets(maxPackets: Int = 24) async {
         var processed = 0
         while processed < maxPackets, let raw = buffer.nextRawPacket() {
             processed += 1
-            handleRawPacket(raw)
+            await handleRawPacket(raw)
         }
 
         // Không xử lý hàng nghìn packet liên tiếp trên MainActor. Nhường run-loop
-        // để SwiftUI còn nhận touch/scroll, sau đó xử lý tiếp phần còn lại.
+        // để SwiftUI còn nhận touch/scroll/vẽ hình, sau đó xử lý tiếp phần còn lại.
+        // (Trước đây phần giải nén bên dưới chạy đồng bộ ngay trên MainActor — vừa
+        // vào server, hàng loạt packet Chunk Data/Player Info nén dồn dập tới khiến
+        // app "đứng hình" vài giây; giờ việc giải nén được đẩy sang thread nền và
+        // có điểm nhường run-loop, KHÔNG đổi bất kỳ logic đăng nhập/giao thức nào.)
         if processed == maxPackets, buffer.remainingCount > 0 {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.drainPackets(maxPackets: maxPackets)
-            }
+            await Task.yield()
+            await drainPackets(maxPackets: maxPackets)
         }
     }
 
     /// `raw` = toàn bộ nội dung sau byte độ dài gói (có thể còn nén).
-    private func handleRawPacket(_ raw: Data) {
+    private func handleRawPacket(_ raw: Data) async {
         var payload = raw
         if compressionThreshold >= 0 {
             var idx = 0
@@ -501,7 +509,11 @@ final class MCClient: ObservableObject {
             } else {
                 let expected = Int(dataLen)
                 guard expected > 0 else { return }
-                guard let inflated = zlibInflate(rest, expectedSize: expected) else {
+                // Zlib inflate là việc tốn CPU (packet Chunk Data lúc mới join có thể
+                // rất lớn) — chạy trên thread nền (Task.detached) rồi await kết quả,
+                // để MainActor rảnh ra vẽ UI trong lúc chờ thay vì đứng hình. Định dạng
+                // dữ liệu/điều kiện lỗi giữ y nguyên như cũ.
+                guard let inflated = await Self.inflateOffMainThread(rest, expectedSize: expected) else {
                     compressionFailureCount += 1
                     let now = Date().timeIntervalSince1970
                     // Không spam UI hàng trăm dòng khi server/proxy gửi packet
@@ -534,6 +546,14 @@ final class MCClient: ObservableObject {
         default:
             break
         }
+    }
+
+    /// Giải nén zlib trên 1 thread nền (không đụng tới MainActor / state của client),
+    /// dùng đúng hàm `zlibInflate` cũ — chỉ đổi CHỖ chạy, không đổi CÁCH giải nén.
+    private static func inflateOffMainThread(_ data: Data, expectedSize: Int) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            zlibInflate(data, expectedSize: expectedSize)
+        }.value
     }
 
     // MARK: - Login state
@@ -1134,6 +1154,9 @@ final class MCClient: ObservableObject {
     // MARK: - Tự động đăng nhập + mở compass + chọn Diamond Axe
 
     private func attemptAutoLogin() {
+        // Chỉ mục để bật/tắt automation từ toggle "Autologin" trong Edit server — mọi bước
+        // bên dưới (thời gian chờ, gửi /login, mở la bàn, chọn ô 23...) giữ nguyên y hệt.
+        guard autoLoginEnabled else { return }
         guard let password = MCCredentialStore.loadPassword(host: host, port: port, username: username)
                 ?? MCCredentialStore.loadAccountPassword(username: username) else { return }
         let generation = UUID()

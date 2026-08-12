@@ -48,6 +48,34 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
     var host: String            // vd: play.example.com
     var port: UInt16 = 25565
     var accountId: UUID?        // tham chiếu tới MCAccount đã lưu trong MCAccountStore
+    /// Bật: vào server xong tự gửi "/login <mật khẩu>", chờ rồi tự mở la bàn + chọn item
+    /// (dùng lại đúng automation có sẵn trong MCClient). Tắt: vào server bình thường,
+    /// không tự làm gì cả — người dùng tự gõ lệnh. Mặc định bật để giữ hành vi cũ.
+    var autoLogin: Bool = true
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, host, port, accountId, autoLogin
+    }
+
+    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565, accountId: UUID? = nil, autoLogin: Bool = true) {
+        self.id = id
+        self.name = name
+        self.host = host
+        self.port = port
+        self.accountId = accountId
+        self.autoLogin = autoLogin
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 25565
+        accountId = try c.decodeIfPresent(UUID.self, forKey: .accountId)
+        // Hồ sơ server lưu từ bản cũ chưa có field này -> mặc định true (giữ hành vi cũ).
+        autoLogin = try c.decodeIfPresent(Bool.self, forKey: .autoLogin) ?? true
+    }
 }
 
 final class MCProfileStore: ObservableObject {
