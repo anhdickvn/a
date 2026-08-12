@@ -1,10 +1,13 @@
-# ChatApp v39
+# Minecraft v40
 
-v38 keeps v37 UI/layout and changes only:
-- Keyboard avoidance: chat transcript is lifted above the software keyboard while typing.
-- TAB autocomplete also works for ordinary chat text, not only slash commands. Typing a token such as `xin chao izu` and pressing TAB uses the server Player List to suggest/complete matching online players.
-- Existing v37 URL/link colors, GUI item layout, item lore and WASD code are preserved unchanged.
+Based on v39. Movement logic is preserved.
 
-
-## v39 movement behavior
-W/A/S/D are one-shot micro moves: an immediate tiny Player Position step plus one optional short follow-up step. There is no repeating movement timer or post-release burst; server correction cancels the follow-up.
+Fixes in v40:
+- GUI/inventory `...` opens the item tooltip directly; no intermediate action sheet.
+- Chat `show_item` hover opens a detailed item view with quantity, lore and parsed enchantments.
+- GUI/inventory item NBT enchantments are shown inside the display-lore tooltip.
+- Hover-item tap data preserves enchantments through the local `minecraft-item://` bridge.
+- Background handling no longer starts the silent-audio keep-alive or sends idle movement while the app is backgrounded.
+- Network send/receive errors while backgrounded are deferred until foreground instead of immediately surfacing POSIX 89.
+- Foreground recovery uses a delayed stale-socket check and reconnect, matching the expected ChatCraft-like behavior more closely.
+- Background audio mode was removed from Info.plist.
