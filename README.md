@@ -1,4 +1,4 @@
-# Minecraft-FIXED-UI-v27-PROTOCOL-DIAGNOSTIC
+# Minecraft-FIXED-UI-v22-SESSION-HEARTBEAT
 
 Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau một thời gian, sau đó xuất hiện `This command cannot be executed on this server` hoặc `disconnect.timeout`.
 
@@ -61,10 +61,10 @@ Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau m
   entirely if `with` was also empty), which could hide part of a server's real response.
   Both are now kept.
 
-## v27 protocol-only diagnostic
-- Không thay đổi chat scroll, GUI, `/ah`, automation hay movement behaviour; mục tiêu của bản này là bắt đúng nguyên nhân disconnect khi người chơi đứng yên.
-- Thêm ring-buffer 80 packet RX/TX cuối cùng của Play session, gồm timestamp T+x.xx, packet ID, byte count và mô tả KeepAlive / Teleport / movement / Client Settings / Resource Pack.
-- Khi TCP EOF, receive error hoặc server gửi Play Disconnect (0x1A), app tự chụp `⚠️ [PROTOCOL DIAGNOSTIC]` kèm protocol version, packet RX cuối, KeepAlive RX/response, Teleport Confirm, unknown Play packet count và 80 packet cuối.
-- KeepAlive response chỉ được đánh dấu hoàn tất sau khi `NWConnection` báo `contentProcessed`; nếu send 0x0B lỗi, diagnostic sẽ hiện rõ.
-- Các packet Play chưa được xử lý không còn bị bỏ qua im lặng: diagnostic ghi ID + kích thước để phát hiện server/proxy gửi packet mà client thiếu handler.
-- Test chuẩn: vào server, không gõ lệnh/không click/không di chuyển, đứng yên 70–90 giây. Khi disconnect, chụp khối `[PROTOCOL DIAGNOSTIC]` và toàn bộ các dòng `RX/TX` ngay phía dưới.
+
+## v27 protocol diagnostic
+- Giữ ring buffer 80 packet RX/TX gần nhất ở Play state, không spam từng packet lên UI.
+- Ghi KeepAlive ID + thời điểm RX/TX, Teleport ID, packet cuối RX/TX, compression threshold và state.
+- Khi server gửi Disconnect (0x1A), TCP EOF hoặc NWConnection error, tự dump toàn bộ trace vào chat debug.
+- Mục tiêu: phân biệt chính xác KeepAlive timeout, Teleport Confirm thiếu, movement/heartbeat, packet Play chưa xử lý, compression/framing hoặc server chủ động đóng socket.
+- Không thay đổi logic chat scroll/clear và không thay đổi GUI automation trong bản chẩn đoán này.
