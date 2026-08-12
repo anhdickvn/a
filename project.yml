@@ -10,7 +10,6 @@ packages:
     from: 0.9.20
 
 targets:
-
   ChatMC:
     type: application
     platform: iOS
@@ -31,22 +30,24 @@ targets:
 
       configs:
         Debug:
-          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          CODE_SIGNING_ALLOWED: NO
+          CODE_SIGNING_REQUIRED: NO
 
         Release:
-          SWIFT_OPTIMIZATION_LEVEL: "-O"
           CODE_SIGNING_ALLOWED: NO
           CODE_SIGNING_REQUIRED: NO
 
 
 schemes:
-
   ChatMC:
     build:
       targets:
         ChatMC:
-          - Debug
-          - Release
+          - running
+          - testing
+          - analyzing
+          - profiling
+          - archiving
 
     run:
       config: Debug
