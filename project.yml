@@ -9,9 +9,7 @@ packages:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.20
 
-
 targets:
-
   ChatMC:
     type: application
     platform: iOS
@@ -29,29 +27,3 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.chatmc.app
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
-
-      configs:
-        Debug:
-          CODE_SIGNING_ALLOWED: NO
-          CODE_SIGNING_REQUIRED: NO
-
-        Release:
-          CODE_SIGNING_ALLOWED: NO
-          CODE_SIGNING_REQUIRED: NO
-
-
-schemes:
-
-  ChatMC:
-    shared: true
-
-    build:
-      targets:
-        ChatMC:
-          - all
-
-    run:
-      config: Debug
-
-    archive:
-      config: Release
