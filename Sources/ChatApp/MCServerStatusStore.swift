@@ -4,7 +4,7 @@ import Network
 /// Kết quả 1 lần "Server List Ping" — giống thông tin hiện trong màn chọn server của
 /// Minecraft thật (MOTD, số người chơi online/max, ping ms). Chỉ để HIỂN THỊ trong danh
 /// sách server (tooltip), không liên quan gì tới flow đăng nhập thật trong MCClient.
-struct MCServerStatus: Equatable, Sendable {
+struct MCPingStatus: Equatable, Sendable {
     enum Phase: Equatable, Sendable {
         case loading
         case online
@@ -21,11 +21,11 @@ struct MCServerStatus: Equatable, Sendable {
 /// Tự động "ping" từng server đã lưu (kiểu Status Ping) để lấy thông tin hiển thị nhanh
 /// trong danh sách, KHÔNG mở phiên đăng nhập thật, không đụng tới MCClient.
 @MainActor
-final class MCServerStatusStore: ObservableObject {
-    @Published private(set) var statuses: [UUID: MCServerStatus] = [:]
+final class MCPingStatusStore: ObservableObject {
+    @Published private(set) var statuses: [UUID: MCPingStatus] = [:]
     private var inFlight: Set<UUID> = []
 
-    func status(for profileId: UUID) -> MCServerStatus? { statuses[profileId] }
+    func status(for profileId: UUID) -> MCPingStatus? { statuses[profileId] }
 
     /// Ping lại toàn bộ danh sách server (vd khi mở màn hình hoặc kéo-refresh).
     func refreshAll(_ profiles: [MCServerProfile]) {
@@ -35,14 +35,14 @@ final class MCServerStatusStore: ObservableObject {
     func refresh(_ profile: MCServerProfile) {
         guard !inFlight.contains(profile.id) else { return }
         inFlight.insert(profile.id)
-        statuses[profile.id] = MCServerStatus(phase: .loading)
+        statuses[profile.id] = MCPingStatus(phase: .loading)
 
         let host = profile.host
         let port = profile.port
         let profileId = profile.id
 
         Task { @MainActor [weak self] in
-            let result = await MCStatusPingSession(host: host, port: port).run()
+            let result = await MCPingSession(host: host, port: port).run()
             guard let self else { return }
             self.inFlight.remove(profileId)
             self.statuses[profileId] = result
@@ -53,15 +53,15 @@ final class MCServerStatusStore: ObservableObject {
 /// 1 phiên "Status Ping" dùng-1-lần: mở TCP riêng, hỏi Status, đo round-trip bằng gói
 /// Ping/Pong, rồi tự đóng. Tách hẳn khỏi MCClient để không ảnh hưởng logic đăng nhập thật.
 @MainActor
-private final class MCStatusPingSession {
+private final class MCPingSession {
     private let host: String
     private let port: UInt16
     private let connection: NWConnection
     private let buffer = MCByteBuffer()
     private var awaitingPong = false
     private var pingSentAt: DispatchTime = .now()
-    private var baseStatus = MCServerStatus(phase: .loading)
-    private var continuation: CheckedContinuation<MCServerStatus, Never>?
+    private var baseStatus = MCPingStatus(phase: .loading)
+    private var continuation: CheckedContinuation<MCPingStatus, Never>?
     private var finished = false
 
     init(host: String, port: UInt16) {
@@ -70,7 +70,7 @@ private final class MCStatusPingSession {
         connection = NWConnection(host: .init(host), port: .init(rawValue: port) ?? 25565, using: .tcp)
     }
 
-    func run() async -> MCServerStatus {
+    func run() async -> MCPingStatus {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
 
@@ -176,7 +176,7 @@ private final class MCStatusPingSession {
             motd = ""
         }
 
-        baseStatus = MCServerStatus(
+        baseStatus = MCPingStatus(
             phase: .online,
             motd: motd,
             onlinePlayers: (players?["online"] as? Int) ?? 0,
@@ -201,7 +201,7 @@ private final class MCStatusPingSession {
         }
     }
 
-    private func finish(_ status: MCServerStatus) {
+    private func finish(_ status: MCPingStatus) {
         guard !finished else { return }
         finished = true
         connection.cancel()

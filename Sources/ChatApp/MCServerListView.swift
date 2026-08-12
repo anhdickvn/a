@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MCServerListView: View {
     @StateObject private var store = MCProfileStore()
-    @StateObject private var statusStore = MCServerStatusStore()
+    @StateObject private var statusStore = MCPingStatusStore()
     @EnvironmentObject var accountStore: MCAccountStore
     @State private var showAdd = false
     @State private var showAddAccount = false
@@ -240,7 +240,7 @@ struct MCServerListView: View {
 
     /// Badge nhỏ góc phải kiểu "Ping 166   53/6767" trong tooltip server list thật.
     @ViewBuilder
-    private func pingBadge(_ status: MCServerStatus?) -> some View {
+    private func pingBadge(_ status: MCPingStatus?) -> some View {
         switch status?.phase {
         case .online:
             if let status {
