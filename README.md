@@ -60,3 +60,27 @@ Fix tập trung vào lỗi phiên Minecraft bị server/proxy coi là idle sau m
   args used to have the translate key silently replaced by just the args (or dropped
   entirely if `with` was also empty), which could hide part of a server's real response.
   Both are now kept.
+
+## v27 zero-rotation anti-bot fix
+- User-reported evidence: `This command cannot be executed on this server` fired at
+  T+64.57s and, on a separate repro with a completely different action (no GUI open,
+  standing still, sent nothing but a chat command), at T+64.59s — i.e. the exact same
+  elapsed time almost to the hundredth of a second, regardless of whether a GUI was open
+  or what the player was doing. Both times `hasServerPosition = true`, the idle heartbeat
+  was firing every ~0.3s, and the last packet received was 0.00s ago — so the connection
+  and the position heartbeat were both completely healthy. Real client (TLauncher /
+  vanilla) never reproduces this doing the same thing.
+- That signature — a fixed ~60s server-side threshold, independent of network health or
+  GUI state — matches a very common anti-bot heuristic: flag any player whose look
+  direction (yaw/pitch) hasn't changed at all over a rolling window, since real players'
+  hand/mouse always introduces tiny continuous rotation even standing still, while a
+  scripted bot's camera is perfectly static.
+- Root cause: this app has **never** sent a serverbound packet containing yaw/pitch.
+  The idle heartbeat only ever sent `0x0D` (Player Position — X/Y/Z, no rotation), and
+  there is no camera/look-around control in the UI at all, so `playerYaw`/`playerPitch`
+  are set once from the server's spawn packet and then frozen forever from the server's
+  point of view — a textbook zero-rotation bot signature.
+- Fix: added `sendIdlePositionAndLook()`, which sends `0x0F` (Player Position And Look)
+  instead of `0x0D` once `hasServerPosition` is true, applying a small smooth sin/cos
+  jitter (~1-1.5°) to yaw/pitch each tick to mimic natural micro-movement — without
+  touching the real `playerYaw`/`playerPitch` state used for WASD movement direction.
