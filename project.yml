@@ -3,16 +3,13 @@ name: ChatMC
 options:
   bundleIdPrefix: com.chatmc
   createIntermediateGroups: true
-  generateEmptyDirectories: true
 
 packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.20
 
-
 targets:
-
   ChatMC:
     type: application
     platform: iOS
@@ -33,17 +30,13 @@ targets:
 
 
 schemes:
-
   ChatMC:
     shared: true
 
     build:
       targets:
         ChatMC:
-          - build
-
-    run:
-      config: Debug
+          - all
 
     archive:
       config: Release
