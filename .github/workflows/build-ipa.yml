@@ -13,8 +13,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check files
+      - name: List files
         run: |
+          pwd
           ls -la
 
       - name: Install XcodeGen
@@ -26,7 +27,7 @@ jobs:
           xcodegen generate
           ls -la
 
-      - name: Build Archive
+      - name: Archive
         run: |
           xcodebuild archive \
           -project Minecraft.xcodeproj \
