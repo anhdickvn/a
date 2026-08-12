@@ -1,23 +1,15 @@
-# Minecraft iOS – v27 Confirm Transaction Fix
+# Minecraft v30 - ChatCraft scroll + WASD touch fix
 
-Fix for protocol disconnect seen on Minecraft 1.12.x servers where the server repeatedly sends Play packet 0x11 (Confirm Transaction) and then disconnects with `disconnect.timeout`.
+Changes:
+- Chat transcript is updated only when transcript data changes; typing in the message box no longer rebuilds the UITextView and make the scrollbar jitter.
+- When at bottom, new server chat follows the latest message.
+- When scrolled up, incoming chat preserves the viewport and old chat remains readable.
+- Vertical scrollbar is visible and white for a ChatCraft-like appearance.
+- WASD movement state is no longer @Published every movement tick. Coordinate display is published only on server correction/release, so SwiftUI no longer recreates the UIKit WASD button while the finger is held.
+- Movement debug is buffered and published when the key is released / jump finishes, so debug logging cannot break hold-to-move touches.
+- URL click events in chat open directly instead of showing the extra "Chat click action" dialog.
+- Chat hover show_item events can be tapped to open an item tooltip with a friendly item name/count instead of raw `tile.*.name` text.
+- Tab completion behavior is preserved.
+- iOS 16 compatibility and previous protocol fixes are preserved.
 
-## Fix
-- Handle clientbound Play 0x11 Confirm Transaction.
-- Parse Window ID (u8), Action Number (i16 big-endian), Accepted (bool).
-- Echo the same fields in serverbound Play 0x05 Confirm Transaction.
-- Correct diagnostic packet naming: RX 0x11 / TX 0x05.
-- Add confirm-transaction RX/TX timing/details to protocol diagnostics.
-- Keep existing chat/UI/GUI behavior unchanged.
-
-## Validation
-`swiftc -parse Sources/ChatApp/MCClient.swift Sources/ChatApp/MCVarInt.swift` passes on the source tree.
-
-Build using the project's Xcode archive command as usual.
-
-
-## v28 WASD / Jump debug
-- Dedicated movement controller combines held W/A/S/D inputs into one 20 Hz loop.
-- Settings > Chẩn đoán > Ghi Debug WASD / Jump enables a separate movement trace.
-- Trace records touch down/up, state guards, server-position availability, yaw, local coordinate deltas, jump start, and server movement corrections.
-- Debug is kept out of the normal chat transcript unless protocol debug is explicitly enabled.
+- v30-fix: Tắt hoàn toàn protocol/diagnostic debug chạy nền; chỉ giữ Debug WASD / Jump khi người dùng bật trong Settings. Không còn ring-buffer RX/TX, T+ protocol log, hay snapshot chẩn đoán tự động. Logic kết nối/gameplay hiện tại được giữ nguyên.
