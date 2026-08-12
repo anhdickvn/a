@@ -13,3 +13,6 @@ Build compatibility:
 - Removed iOS 17-only ContentUnavailableView usage.
 - Uses the iOS 16-compatible onChange(of:perform:) form.
 - Removed the invalid animated: argument from UITextView.scrollRangeToVisible.
+
+
+V44 hotfix: replaced POSIXErrorCode.description with String(describing:) for iOS SDK compatibility.
