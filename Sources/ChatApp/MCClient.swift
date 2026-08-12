@@ -48,11 +48,10 @@ final class MCClient: ObservableObject {
     @Published var foodSaturation: Float = 5
 
 
-    /// Fallback nếu server profile không chỉ định protocol version cụ thể.
-    private let fallbackProtocolVersion: Int32 = 760
-    private var protocolVersion: Int32 = 760
+    /// Fallback cho proxy Tôi Chơi :54321 khi profile chưa có protocol cụ thể.
+    private let fallbackProtocolVersion: Int32 = 47
+    private var protocolVersion: Int32 = 47
     private var useLoginForSession = false
-    private var isForgeServer = false
 
     private var connection: NWConnection?
     private let buffer = MCByteBuffer()
@@ -144,13 +143,12 @@ final class MCClient: ObservableObject {
 
     /// `username`: lấy từ MCAccount đã chọn cho server này (đăng nhập kiểu offline/cracked).
     /// `protocolVersion`: chọn đúng version thật của server (vd 1.12.2 = 340) trong màn Sửa server,
-    /// tránh bị kick do sai protocol. Không truyền thì dùng mặc định 760.
+    /// tránh bị kick do sai protocol. Không truyền thì dùng mặc định 47.
     func connect(host: String, port: UInt16, username: String, useLogin: Bool = false,
-                 protocolVersion: Int32? = nil, isForge: Bool = false) {
+                 protocolVersion: Int32? = nil) {
         disconnect(silent: true)
         shouldStayConnected = true
         useLoginForSession = useLogin
-        isForgeServer = isForge
         reconnectDelay = 1.5
         self.host = host
         self.port = port
@@ -361,7 +359,7 @@ final class MCClient: ObservableObject {
             Task { @MainActor in
                 guard self.shouldStayConnected, self.connectAttemptToken == token else { return }
                 self.appendLog(.info, "Đang kết nối lại trực tiếp tới \(self.host):\(self.port)...")
-                // Giữ nguyên protocolVersion/isForgeServer đã chọn cho server này, không reset về fallback.
+                // Giữ nguyên protocolVersion đã chọn cho server này, không reset về fallback.
                 self.openMainConnection(token: token)
             }
         }
@@ -371,23 +369,18 @@ final class MCClient: ObservableObject {
 
     private func startHandshakeAndLogin() {
         state = .loggingIn
-        appendLog(.info, "Đang đăng nhập (offline) với tên \(username)...")
+        appendLog(.info, "Đang đăng nhập (offline) với tên \(username) — Minecraft \(versionHint(for: protocolVersion)), protocol \(protocolVersion)...")
 
-        // Handshake (0x00): protocol version, địa chỉ, cổng, next state = 2 (Login)
-        // Nếu server chạy Forge, gắn marker FML/FML2 vào cuối địa chỉ để server Forge
-        // nhận diện và cho client vanilla-like vào (chuẩn forge handshake trick).
-        var handshakeHost = host
-        if isForgeServer {
-            handshakeHost += protocolVersion >= 404 ? "\0FML2\0" : "\0FML\0"
-        }
+        // Handshake (0x00): protocol version, địa chỉ, cổng, next state = 2 (Login).
+        // Handshake vanilla: không thêm marker/mod handshake vào hostname.
         var hsPayload: [UInt8] = []
         hsPayload += MCVarInt.encode(protocolVersion)
-        hsPayload += mcEncodeString(handshakeHost)
+        hsPayload += mcEncodeString(host)
         hsPayload += [UInt8(port >> 8), UInt8(port & 0xFF)]
         hsPayload += MCVarInt.encode(2)
         send(packetId: 0x00, payload: hsPayload)
 
-        // Login Start (0x00): username; các trường optional của 1.19.2 để trống
+        // Login Start (0x00): protocol 47/1.8.x dùng đúng một trường username; các protocol mới sẽ cần layout riêng.
         send(packetId: 0x00, payload: mcEncodeString(username))
     }
 

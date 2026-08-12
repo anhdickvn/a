@@ -33,7 +33,7 @@ struct MCChatView: View {
     @State private var sentMessages: [String] = []
     @State private var historyCursor: Int?
 
-    private var account: MCAccount? { accountStore.account(for: profile.accountId) }
+    private var account: MCAccount? { accountStore.selectedAccount ?? accountStore.account(for: profile.accountId) }
 
     var body: some View {
         ZStack {
@@ -116,7 +116,7 @@ struct MCChatView: View {
             // và socket cũ vẫn còn nguyên. Không tạo kết nối thứ hai nếu phiên vẫn sống.
             guard !client.isConnectedTo(host: profile.host, port: profile.port, username: account.username) else { return }
             client.connect(host: profile.host, port: profile.port, username: account.username, useLogin: profile.useLogin,
-                           protocolVersion: profile.protocolVersion, isForge: profile.isForge)
+                           protocolVersion: profile.protocolVersion)
         }
         // Chỉ khởi động tác vụ cache; tuyệt đối không await trước khi connect.
         .task(priority: .utility) { await resourcePack.ensureVanillaAssets() }

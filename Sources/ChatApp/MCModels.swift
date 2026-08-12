@@ -15,9 +15,30 @@ struct MCAccount: Identifiable, Codable, Equatable {
 
 final class MCAccountStore: ObservableObject {
     @Published var accounts: [MCAccount] {
-        didSet { save() }
+        didSet {
+            save()
+            if let selected = selectedAccountId, !accounts.contains(where: { $0.id == selected }) {
+                selectedAccountId = accounts.first?.id
+            } else if selectedAccountId == nil {
+                selectedAccountId = accounts.first?.id
+            }
+        }
     }
+
+    /// Tài khoản đang được chọn ở mục Accounts.
+    /// Server chat luôn dùng tài khoản này, không còn gắn username riêng cho từng server.
+    @Published var selectedAccountId: UUID? {
+        didSet {
+            if let id = selectedAccountId {
+                UserDefaults.standard.set(id.uuidString, forKey: selectedKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedKey)
+            }
+        }
+    }
+
     private let key = "mc_accounts"
+    private let selectedKey = "mc_selected_account"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -26,12 +47,25 @@ final class MCAccountStore: ObservableObject {
         } else {
             self.accounts = []
         }
+
+        if let raw = UserDefaults.standard.string(forKey: selectedKey),
+           let id = UUID(uuidString: raw),
+           accounts.contains(where: { $0.id == id }) {
+            self.selectedAccountId = id
+        } else {
+            self.selectedAccountId = accounts.first?.id
+        }
     }
 
     private func save() {
         if let data = try? JSONEncoder().encode(accounts) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+
+    var selectedAccount: MCAccount? {
+        guard let id = selectedAccountId else { return nil }
+        return accounts.first { $0.id == id }
     }
 
     func account(for id: UUID?) -> MCAccount? {
@@ -85,17 +119,13 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
     var useLogin: Bool = false
     /// Protocol version dùng khi handshake login. Chọn đúng version thật của server
     /// (vd 1.12.2 = 340) thay vì để app tự đoán/hardcode, tránh bị kick "Outdated client".
-    var protocolVersion: Int32 = 760
-    /// Bật nếu server chạy Forge — app sẽ gắn marker FML vào địa chỉ khi handshake để
-    /// server Forge chấp nhận client vanilla-like thay vì từ chối do thiếu mod list.
-    var isForge: Bool = false
-
+    var protocolVersion: Int32 = 47
     private enum CodingKeys: String, CodingKey {
-        case id, name, host, port, accountId, useLogin, protocolVersion, isForge
+        case id, name, host, port, accountId, useLogin, protocolVersion
     }
 
     init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565, accountId: UUID? = nil,
-         useLogin: Bool = false, protocolVersion: Int32 = 760, isForge: Bool = false) {
+         useLogin: Bool = false, protocolVersion: Int32 = 47) {
         self.id = id
         self.name = name
         self.host = host
@@ -103,7 +133,6 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
         self.accountId = accountId
         self.useLogin = useLogin
         self.protocolVersion = protocolVersion
-        self.isForge = isForge
     }
 
     init(from decoder: Decoder) throws {
@@ -114,8 +143,7 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
         port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 25565
         accountId = try c.decodeIfPresent(UUID.self, forKey: .accountId)
         useLogin = try c.decodeIfPresent(Bool.self, forKey: .useLogin) ?? false
-        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 760
-        isForge = try c.decodeIfPresent(Bool.self, forKey: .isForge) ?? false
+        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 47
     }
 }
 
@@ -141,12 +169,33 @@ final class MCProfileStore: ObservableObject {
     }
 
     func ensureDefaultServer() {
-        let exists = profiles.contains {
+        if let index = profiles.firstIndex(where: {
             $0.host.caseInsensitiveCompare("proxy.toichoi.com") == .orderedSame && $0.port == 54321
+        }) {
+            // Proxy 54321 đã được kiểm tra thực tế: Waterfall quảng bá protocol 47.
+            // Di chuyển profile cũ từng bị lưu 760 về 1.8.x / protocol 47.
+            if profiles[index].protocolVersion != 47 {
+                profiles[index].protocolVersion = 47
+            }
+            return
         }
-        guard !exists else { return }
-        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321, accountId: nil,
-                                         protocolVersion: 47), at: 0)
+
+        profiles.insert(
+            MCServerProfile(
+                name: "Tôi Chơi NetWork",
+                host: "proxy.toichoi.com",
+                port: 54321,
+                accountId: selectedAccountIdForDefaultServer(),
+                protocolVersion: 47
+            ),
+            at: 0
+        )
+    }
+
+    private func selectedAccountIdForDefaultServer() -> UUID? {
+        // MCProfileStore không giữ accountStore; profile mới sẽ được gắn lại
+        // với account đang chọn khi mở màn hình sửa server nếu cần.
+        nil
     }
 }
 
