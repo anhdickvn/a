@@ -14,3 +14,10 @@ Fix for protocol disconnect seen on Minecraft 1.12.x servers where the server re
 `swiftc -parse Sources/ChatApp/MCClient.swift Sources/ChatApp/MCVarInt.swift` passes on the source tree.
 
 Build using the project's Xcode archive command as usual.
+
+
+## v28 WASD / Jump debug
+- Dedicated movement controller combines held W/A/S/D inputs into one 20 Hz loop.
+- Settings > Chẩn đoán > Ghi Debug WASD / Jump enables a separate movement trace.
+- Trace records touch down/up, state guards, server-position availability, yaw, local coordinate deltas, jump start, and server movement corrections.
+- Debug is kept out of the normal chat transcript unless protocol debug is explicitly enabled.
