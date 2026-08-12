@@ -10,7 +10,7 @@ struct MinecraftApp: App {
         WindowGroup {
             TabView {
                 MCServerListView()
-                    .tabItem { Label("ChatMinecraft", systemImage: "message.fill") }
+                    .tabItem { Label("Chat", systemImage: "message.fill") }
 
                 MCLogsView()
                     .tabItem { Label("Logs", systemImage: "archivebox.fill") }

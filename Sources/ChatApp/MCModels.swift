@@ -15,22 +15,9 @@ struct MCAccount: Identifiable, Codable, Equatable {
 
 final class MCAccountStore: ObservableObject {
     @Published var accounts: [MCAccount] {
-        didSet {
-            save()
-            // Nếu account đang chọn bị xoá (hoặc chưa từng chọn), tự rơi về account đầu tiên
-            // để luôn có 1 "tài khoản đang dùng" — vào server nào cũng dùng đúng account này.
-            if selectedAccountId == nil || !accounts.contains(where: { $0.id == selectedAccountId }) {
-                selectedAccountId = accounts.first?.id
-            }
-        }
-    }
-    /// Account đang được chọn ở khung carousel trên đầu màn hình danh sách server.
-    /// Đây là account DUY NHẤT dùng để vào MỌI server — không còn chọn riêng theo từng server nữa.
-    @Published var selectedAccountId: UUID? {
-        didSet { saveSelected() }
+        didSet { save() }
     }
     private let key = "mc_accounts"
-    private let selectedKey = "mc_selected_account_id"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -38,12 +25,6 @@ final class MCAccountStore: ObservableObject {
             self.accounts = decoded
         } else {
             self.accounts = []
-        }
-        if let idString = UserDefaults.standard.string(forKey: selectedKey), let uuid = UUID(uuidString: idString),
-           self.accounts.contains(where: { $0.id == uuid }) {
-            self.selectedAccountId = uuid
-        } else {
-            self.selectedAccountId = self.accounts.first?.id
         }
     }
 
@@ -53,51 +34,9 @@ final class MCAccountStore: ObservableObject {
         }
     }
 
-    private func saveSelected() {
-        UserDefaults.standard.set(selectedAccountId?.uuidString, forKey: selectedKey)
-    }
-
     func account(for id: UUID?) -> MCAccount? {
         guard let id else { return nil }
         return accounts.first { $0.id == id }
-    }
-
-    /// Account sẽ dùng để đăng nhập khi vào bất kỳ server nào — luôn là account
-    /// đang được chọn ở carousel trên đầu màn hình (mặc định = account đầu tiên).
-    var currentAccount: MCAccount? {
-        account(for: selectedAccountId) ?? accounts.first
-    }
-}
-
-// MARK: - Danh sách version Minecraft hỗ trợ chọn thủ công (thay vì hardcode 1 protocol)
-
-struct MCVersionOption: Identifiable, Hashable {
-    var id: Int32 { protocolVersion }
-    let label: String
-    let protocolVersion: Int32
-
-    static let all: [MCVersionOption] = [
-        .init(label: "1.7.10", protocolVersion: 5),
-        .init(label: "1.8.9", protocolVersion: 47),
-        .init(label: "1.9.4", protocolVersion: 110),
-        .init(label: "1.10.2", protocolVersion: 210),
-        .init(label: "1.11.2", protocolVersion: 316),
-        .init(label: "1.12.2", protocolVersion: 340),
-        .init(label: "1.13.2", protocolVersion: 404),
-        .init(label: "1.14.4", protocolVersion: 498),
-        .init(label: "1.15.2", protocolVersion: 578),
-        .init(label: "1.16.5", protocolVersion: 754),
-        .init(label: "1.17.1", protocolVersion: 756),
-        .init(label: "1.18.2", protocolVersion: 758),
-        .init(label: "1.19.2", protocolVersion: 760),
-        .init(label: "1.19.4", protocolVersion: 762),
-        .init(label: "1.20.1", protocolVersion: 763),
-        .init(label: "1.20.4", protocolVersion: 765),
-        .init(label: "1.21.1", protocolVersion: 767),
-    ]
-
-    static func label(for protocolVersion: Int32) -> String {
-        all.first { $0.protocolVersion == protocolVersion }?.label ?? "Protocol \(protocolVersion)"
     }
 }
 
@@ -108,36 +47,7 @@ struct MCServerProfile: Identifiable, Codable, Equatable {
     var name: String            // tên gợi nhớ, vd "Server nhà"
     var host: String            // vd: play.example.com
     var port: UInt16 = 25565
-    /// Nếu bật, sau khi Login Success app sẽ tự gửi /login <mật khẩu> và chỉ khi đó
-    /// mới chạy flow chuột phải la bàn / mở menu server. Tắt = tuyệt đối không tự gửi login.
-    var useLogin: Bool = false
-    /// Protocol version dùng khi handshake login. Chọn đúng version thật của server
-    /// (vd 1.12.2 = 340) thay vì để app tự đoán/hardcode, tránh bị kick "Outdated client".
-    var protocolVersion: Int32 = 760
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, host, port, useLogin, protocolVersion
-    }
-
-    init(id: UUID = UUID(), name: String, host: String, port: UInt16 = 25565,
-         useLogin: Bool = false, protocolVersion: Int32 = 760) {
-        self.id = id
-        self.name = name
-        self.host = host
-        self.port = port
-        self.useLogin = useLogin
-        self.protocolVersion = protocolVersion
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        name = try c.decode(String.self, forKey: .name)
-        host = try c.decode(String.self, forKey: .host)
-        port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 25565
-        useLogin = try c.decodeIfPresent(Bool.self, forKey: .useLogin) ?? false
-        protocolVersion = try c.decodeIfPresent(Int32.self, forKey: .protocolVersion) ?? 760
-    }
+    var accountId: UUID?        // tham chiếu tới MCAccount đã lưu trong MCAccountStore
 }
 
 final class MCProfileStore: ObservableObject {
@@ -166,8 +76,7 @@ final class MCProfileStore: ObservableObject {
             $0.host.caseInsensitiveCompare("proxy.toichoi.com") == .orderedSame && $0.port == 54321
         }
         guard !exists else { return }
-        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321,
-                                         protocolVersion: 760), at: 0)
+        profiles.insert(MCServerProfile(name: "Tôi Chơi NetWork", host: "proxy.toichoi.com", port: 54321, accountId: nil), at: 0)
     }
 }
 
@@ -197,8 +106,6 @@ struct MCChatSegment: Identifiable, Codable, Equatable {
     var italic: Bool = false
     var underline: Bool = false
     var strikethrough: Bool = false
-    /// URL mở trực tiếp khi người chơi chạm vào đoạn chat (Minecraft clickEvent=open_url).
-    var linkURL: String? = nil
 }
 
 // MARK: - GUI menu server gửi (mở khi chuột phải la bàn/compass, vd "Chọn máy chủ")
@@ -224,8 +131,6 @@ struct MCOpenWindow {
     var windowId: UInt8
     var title: String
     var slotCount: Int
-    /// State ID của container trong protocol 760, bắt buộc khi gửi Click Window.
-    var stateId: Int32 = 0
     var items: [Int: MCOpenWindowItem] = [:]
 }
 

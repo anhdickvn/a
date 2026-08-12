@@ -21,14 +21,14 @@ targets:
       path: Sources/ChatApp/Info.plist
       properties:
         UILaunchScreen: {}
-        CFBundleDisplayName: ChatMinecraft
+        CFBundleDisplayName: Minecraft
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yourname.minecraft
-        MARKETING_VERSION: "1.2"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         # Không ký khi build trên CI — AltStore/SideStore sẽ tự ký lại khi cài

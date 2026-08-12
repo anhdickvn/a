@@ -211,32 +211,33 @@ private extension MCNBT {
     }
 }
 
-// MARK: - Slot data (protocol 760 / Minecraft 1.19.2)
+// MARK: - Slot data (định dạng pre-1.13 dùng bởi protocol 340 / 1.12.2)
 
 enum MCSlotParser {
-    /// Protocol 760 / 1.19.2: Slot = Present(bool) + Item ID(VarInt) + Count(byte) + Optional NBT.
-    /// Không còn Short itemId + damage như 1.12.2.
+    /// Parse 1 Slot bắt đầu tại `offset`, trả về (item hoặc nil nếu ô trống, offset mới).
+    /// `hotbarIndex` chỉ dùng để gắn vào kết quả khi gọi từ chỗ biết trước vị trí hotbar.
     static func parse(_ data: Data, from offset: Int, hotbarIndex: Int) -> (MCItemSlot?, Int)? {
-        guard let (present, next1) = data.readU8(from: offset) else { return nil }
-        if present == 0 { return (nil, next1) }
-
-        guard let (itemId, next2) = decodeVarInt(from: data, offset: next1),
-              let (countByte, next3) = data.readU8(from: next2) else { return nil }
+        guard let (blockId, next1) = data.readI16BE(from: offset) else { return nil }
+        if blockId == -1 { return (nil, next1) } // ô trống
+        guard let (countByte, next2) = data.readU8(from: next1),
+              let (damage, next3) = data.readI16BE(from: next2)
+        else { return nil }
 
         var reader = MCNBTReader(data: data, offset: next3)
+        guard let firstByte = data.readU8(from: next3)?.0 else { return nil }
         var displayNameSegments: [MCChatSegment]?
         var loreSegments: [[MCChatSegment]] = []
         var finalOffset = next3
 
-        // Optional NBT: 0x00 = no tag; otherwise it starts with a normal NBT root tag.
-        guard let firstByte = data.readU8(from: next3)?.0 else { return nil }
         if firstByte == 0 {
+            // Không có NBT — 1 byte TAG_End
             finalOffset = next3 + 1
         } else {
             guard let root = reader.readRootTag() else { return nil }
             finalOffset = reader.offset
             if let display = root.get("display") {
                 if let name = display.get("Name")?.asString {
+                    // 1.12.2: display.Name là chuỗi thô kiểu cũ, có thể chứa mã màu §.
                     displayNameSegments = chatSegments(from: name)
                 }
                 if let lore = display.get("Lore")?.asStringList {
@@ -245,30 +246,8 @@ enum MCSlotParser {
             }
         }
 
-        let item = MCItemSlot(
-            hotbarIndex: hotbarIndex,
-            itemId: Int16(clamping: Int(itemId)),
-            damage: 0,
-            count: Int(countByte),
-            nameSegments: displayNameSegments,
-            loreSegments: loreSegments
-        )
+        let item = MCItemSlot(hotbarIndex: hotbarIndex, itemId: blockId, damage: damage, count: Int(countByte),
+                               nameSegments: displayNameSegments, loreSegments: loreSegments)
         return (item, finalOffset)
-    }
-
-    private static func decodeVarInt(from data: Data, offset: Int) -> (Int32, Int)? {
-        var numRead = 0
-        var result: Int32 = 0
-        var shift: Int32 = 0
-        var idx = offset
-        while idx < data.count && numRead < 5 {
-            let byte = data[data.startIndex + idx]
-            idx += 1
-            result |= Int32(byte & 0x7F) << shift
-            numRead += 1
-            if byte & 0x80 == 0 { return (result, idx) }
-            shift += 7
-        }
-        return nil
     }
 }

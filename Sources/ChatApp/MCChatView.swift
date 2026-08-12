@@ -33,9 +33,7 @@ struct MCChatView: View {
     @State private var sentMessages: [String] = []
     @State private var historyCursor: Int?
 
-    // Không chọn account riêng theo từng server nữa: luôn dùng account đang được
-    // chọn ở carousel trên đầu màn hình danh sách server (MCAccountStore.currentAccount).
-    private var account: MCAccount? { accountStore.currentAccount }
+    private var account: MCAccount? { accountStore.account(for: profile.accountId) }
 
     var body: some View {
         ZStack {
@@ -111,14 +109,13 @@ struct MCChatView: View {
         }
         .onAppear {
             guard let account else {
-                client.appendUserInfo("Chưa có tài khoản nào — vào màn danh sách server để thêm username.")
+                client.appendUserInfo("Chưa chọn Minecraft username cho server này.")
                 return
             }
             // MCClient là singleton nên khi quay lại từ nút <, chat/player/inventory
             // và socket cũ vẫn còn nguyên. Không tạo kết nối thứ hai nếu phiên vẫn sống.
             guard !client.isConnectedTo(host: profile.host, port: profile.port, username: account.username) else { return }
-            client.connect(host: profile.host, port: profile.port, username: account.username, useLogin: profile.useLogin,
-                           protocolVersion: profile.protocolVersion)
+            client.connect(host: profile.host, port: profile.port, username: account.username)
         }
         // Chỉ khởi động tác vụ cache; tuyệt đối không await trước khi connect.
         .task(priority: .utility) { await resourcePack.ensureVanillaAssets() }
@@ -148,12 +145,12 @@ struct MCChatView: View {
                             logRow(entry).id(entry.id)
                         }
                     }
-                    .padding(.horizontal, 30)
-                    .padding(.top, 6)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
                     .padding(.bottom, 8)
                 }
                 .background(Color.black)
-                .onChange(of: client.log.last?.id) { _ in
+                .onChange(of: client.log.count) { _ in
                     if let last = client.log.last {
                         if last.kind == .chat {
                             historyStore.append(last, serverLabel: "\(profile.host):\(profile.port)")
@@ -200,25 +197,23 @@ struct MCChatView: View {
 
     private var chatInputBar: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 42) {
+            HStack(spacing: 14) {
                 Button { showPreviousMessage() } label: {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 25, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.blue)
-                        .frame(width: 44, height: 30)
+                        .frame(width: 32, height: 24)
                 }
                 .disabled(sentMessages.isEmpty)
 
                 Button { showNextMessage() } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 25, weight: .medium))
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.blue)
-                        .frame(width: 44, height: 30)
+                        .frame(width: 32, height: 24)
                 }
                 .disabled(sentMessages.isEmpty)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 1)
 
             HStack(spacing: 8) {
                 Button("TAB") { completeTab() }
@@ -230,8 +225,6 @@ struct MCChatView: View {
                                onSubmit: sendMessage, onTab: completeTab, movementEnabled: false,
                                onMoveKey: { _ in })
                     .frame(height: 52)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.16), lineWidth: 1))
                     .disabled(client.state != .connected)
 
                 Button { sendMessage() } label: {
@@ -323,7 +316,7 @@ struct MCChatView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Players")
-                                .font(.system(size: 24, weight: .bold))
+                                .font(.title2.weight(.bold))
                                 .foregroundStyle(.white)
                             Text("Tổng online: \(client.onlinePlayerNames.count)")
                                 .font(.subheadline)
@@ -468,18 +461,17 @@ struct MCChatView: View {
         }
         .background(Color(red: 0.08, green: 0.08, blue: 0.09), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08)))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(12)
     }
 
     private func serverWindowRow(_ item: MCOpenWindowItem) -> some View {
         HStack(spacing: 10) {
             itemIcon(item)
             if let segments = item.nameSegments, !segments.isEmpty {
-                coloredText(segments).font(.system(size: 16, weight: .medium))
+                coloredText(segments).font(.system(size: 17, weight: .medium))
             } else {
                 Text(item.plainName)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.blue)
             }
             Spacer(minLength: 4)
@@ -487,16 +479,15 @@ struct MCChatView: View {
                 Image(systemName: "ellipsis")
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.blue)
-                    .frame(width: 32, height: 38)
+                    .frame(width: 36, height: 44)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(minHeight: 46)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 58)
         .contentShape(Rectangle())
         .onTapGesture {
-            // GUI chọn server (Diamond Axe / Ice / hub...) = LEFT click.
-            // Không cần mở "..."; "..." chỉ dành cho thao tác nâng cao.
-            client.smartClickWindowItem(item)
+            // Chạm trực tiếp vào dòng GUI = left click Minecraft thật.
+            client.clickWindowSlot(item.slot, mouseButton: 0)
         }
     }
 
@@ -526,20 +517,12 @@ struct MCChatView: View {
                             }
                         }
                         .padding(.horizontal, 8)
-                        .frame(minHeight: 46)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // Hotbar là thao tác gameplay: chạm item sẽ Use Item
-                            // (RIGHT click). Các thao tác LEFT/Drop vẫn ở "...".
-                            if (36...44).contains(slot) {
-                                client.smartActivateHotbarItem(slot - 36)
-                            }
-                        }
+                        .frame(minHeight: 58)
                         Divider().overlay(Color.white.opacity(0.08))
                     }
                 }
             }
-            .background(Color(red: 0.08, green: 0.08, blue: 0.09), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color(red: 0.08, green: 0.08, blue: 0.09), in: RoundedRectangle(cornerRadius: 12))
         }
     }
 
@@ -550,11 +533,11 @@ struct MCChatView: View {
                 .resizable()
                 .interpolation(.none)
                 .scaledToFit()
-                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
         } else {
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
-                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
                 .overlay {
                     if !resourcePack.vanillaReady { ProgressView().tint(.white) }
                 }
@@ -568,11 +551,11 @@ struct MCChatView: View {
                 .resizable()
                 .interpolation(.none)
                 .scaledToFit()
-                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
         } else {
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
-                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
                 .overlay {
                     if !resourcePack.vanillaReady { ProgressView().tint(.white) }
                 }
@@ -670,100 +653,14 @@ struct MCChatView: View {
 
     @ViewBuilder
     private func logRow(_ entry: MCLogEntry) -> some View {
-        switch entry.kind {
-        case .info:
+        if let segments = entry.segments, !segments.isEmpty {
+            coloredText(segments).font(.system(size: 18))
+        } else {
             Text(entry.text)
-                .font(.system(size: 15, weight: .regular))
-                .italic()
-                .foregroundStyle(.secondary)
-        case .error:
-            Text(entry.text)
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(.red)
-        case .chat, .system:
-            if let segments = entry.segments, !segments.isEmpty {
-                chatRichText(segments)
-            } else {
-                chatRichText([MCChatSegment(text: entry.text)])
-            }
+                .font(.system(size: 18))
+                .foregroundStyle(.white)
+                .textSelection(.enabled)
         }
-    }
-
-    /// Hiển thị chat có màu Minecraft + link.
-    /// URL được gắn bằng AttributedString nên chỉ phần URL mới có hit-area;
-    /// chạm vào phần chat thường không mở bất kỳ action sheet nào.
-    private func chatRichText(_ segments: [MCChatSegment]) -> some View {
-        Text(makeChatAttributedString(segments))
-            .font(.system(size: 17, weight: .regular))
-            .lineSpacing(0.5)
-            .textSelection(.enabled)
-            .environment(\.openURL, OpenURLAction { url in
-                guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-                    return .discarded
-                }
-                UIApplication.shared.open(url)
-                return .handled
-            })
-    }
-
-    private func makeChatAttributedString(_ segments: [MCChatSegment]) -> AttributedString {
-        var result = AttributedString()
-        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
-
-        for segment in segments {
-            let text = segment.text
-            guard !text.isEmpty else { continue }
-
-            // Tôn trọng clickEvent=open_url của server. Nếu server chỉ gửi URL dạng text
-            // (không có clickEvent), tự nhận diện http/https để vẫn mở được bằng một chạm.
-            let explicitURL = segment.linkURL.flatMap(URL.init(string:))
-            let matches: [NSTextCheckingResult] = {
-                guard explicitURL == nil, let detector else { return [] }
-                let ns = text as NSString
-                return detector.matches(in: text, options: [], range: NSRange(location: 0, length: ns.length))
-            }()
-
-            if let explicitURL, let scheme = explicitURL.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-                appendAttributedPart(text, to: &result, segment: segment, link: explicitURL)
-            } else if !matches.isEmpty {
-                let ns = text as NSString
-                var cursor = 0
-                for match in matches {
-                    let range = match.range
-                    if range.location > cursor {
-                        appendAttributedPart(ns.substring(with: NSRange(location: cursor, length: range.location - cursor)),
-                                              to: &result, segment: segment, link: nil)
-                    }
-                    if let url = match.url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-                        appendAttributedPart(ns.substring(with: range), to: &result, segment: segment, link: url)
-                    } else {
-                        appendAttributedPart(ns.substring(with: range), to: &result, segment: segment, link: nil)
-                    }
-                    cursor = range.location + range.length
-                }
-                if cursor < ns.length {
-                    appendAttributedPart(ns.substring(from: cursor), to: &result, segment: segment, link: nil)
-                }
-            } else {
-                appendAttributedPart(text, to: &result, segment: segment, link: nil)
-            }
-        }
-        return result
-    }
-
-    private func appendAttributedPart(_ text: String, to result: inout AttributedString,
-                                      segment: MCChatSegment, link: URL?) {
-        guard !text.isEmpty else { return }
-        var part = AttributedString(text)
-        var attrs = AttributeContainer()
-        attrs.foregroundColor = segment.colorHex.flatMap(Color.init(hex:)) ?? .white
-        if segment.bold { attrs.inlinePresentationIntent = .stronglyEmphasized }
-        if segment.italic { attrs.inlinePresentationIntent = .emphasized }
-        if segment.underline { attrs.underlineStyle = .single }
-        if segment.strikethrough { attrs.strikethroughStyle = .single }
-        if let link { attrs.link = link }
-        part.mergeAttributes(attrs)
-        result.append(part)
     }
 
     private func coloredText(_ segments: [MCChatSegment]) -> Text {
